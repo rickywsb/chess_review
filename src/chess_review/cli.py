@@ -93,6 +93,10 @@ def cmd_review(args: argparse.Namespace) -> int:
         games = [games[idx]]
 
     written: list[str] = []
+    explorer = None
+    if getattr(args, "explorer", False):
+        from .explorer import OpeningExplorer
+        explorer = OpeningExplorer()
     with Engine(path=args.engine, depth=args.depth, threads=args.threads,
                 movetime=args.movetime) as local:
         engine = CloudEngine(local) if args.cloud else local
@@ -102,7 +106,8 @@ def cmd_review(args: argparse.Namespace) -> int:
             print(f"Analyzing: {w} vs {b} ({engine.describe()}) ...")
             ga = analyze_game(game, engine, book=book, progress=True)
             view = build_game_view(ga, player=args.player, threshold=args.threshold,
-                                   with_svg=("html" in fmt), dual=args.both)
+                                   with_svg=("html" in fmt), dual=args.both,
+                                   explorer=explorer)
             md = render_game_markdown(view)
             html = render_game_html(view)
             base = _slug(f"{w}-vs-{b}-{ga.date}") or f"game-{i}"
@@ -188,6 +193,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp_rev.add_argument("--player", help="Focus critical moments on this player's moves.")
     sp_rev.add_argument("--both", action="store_true",
                         help="Dual perspective: full report for BOTH sides (student review).")
+    sp_rev.add_argument("--explorer", action="store_true",
+                        help="Enrich the opening section with lichess masters data "
+                             "(book choices + GM reference games; needs network).")
     sp_rev.add_argument("--game-index", default="0",
                         help="Which game in the file: an index or 'all' (default 0).")
     sp_rev.add_argument("--threshold", type=int, default=MISTAKE,

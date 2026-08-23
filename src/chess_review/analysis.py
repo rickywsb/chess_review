@@ -48,6 +48,7 @@ def analyze_game(
         result.deviation_book_san = opening.book_move_san
 
     deviation_ply = opening.deviation_ply if opening else None
+    book_loaded = book is not None and book.loaded
 
     # First analysis: the starting position.
     prev = engine.analyse(board)
@@ -60,7 +61,13 @@ def analyze_game(
         fen_before = board.fen()
         san = board.san(move)
         uci = move.uci()
-        phase = classify_phase(board)
+
+        # A move is "in book" if it is played before the first deviation ply
+        # (or the game never left theory). Used for both the phase and the field.
+        in_book = deviation_ply is not None and ply < deviation_ply
+        if deviation_ply is None and opening is not None:
+            in_book = True  # never left theory
+        phase = classify_phase(board, in_book=in_book, book_loaded=book_loaded)
 
         best_move = prev.best_move
         best_move_san = board.san(best_move) if best_move is not None else ""
@@ -95,10 +102,6 @@ def analyze_game(
             mate_after = -cur.mate_mover
 
         cp_loss = max(0, eval_before_mover - eval_after_mover)
-
-        in_book = deviation_ply is not None and ply < deviation_ply
-        if deviation_ply is None and opening is not None:
-            in_book = True  # never left theory
 
         result.moves.append(
             MoveAnalysis(

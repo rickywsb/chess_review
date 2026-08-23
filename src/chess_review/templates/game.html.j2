@@ -41,10 +41,15 @@
   .tag { display:inline-block; font-size:11px; padding:2px 8px; border-radius: 10px; margin-right:6px; }
   .tag.blunder { background:#fdecea; color: var(--red); }
   .tag.mistake { background:#fff3e0; color:#e65100; }
+  .tag.inaccuracy { background:#fffde7; color:#9e7d00; }
   .tag.phase { background:#eef2f7; color:#37474f; }
   .played { color: var(--red); font-weight: 700; }
   .best { color: var(--green); font-weight: 700; }
   .lbl { font-weight: 700; color:#37474f; }
+  .opening { background:#fff; border:1px solid var(--line); border-radius:10px; padding:14px 20px; margin:14px 0; }
+  .opening ul { margin:0; padding-left:20px; font-size:14px; }
+  .opening li { margin-bottom:7px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; background:#f4f4f4; padding:1px 5px; border-radius:4px; }
   h2.persp { margin-top:40px; background:#1a1a1a; color:#fff; padding:8px 14px; border:0; border-radius:6px; }
   h3 { font-size:16px; margin:22px 0 10px; }
   a { color:#1565c0; text-decoration: none; }
@@ -62,16 +67,6 @@
     {% if v.eco or v.opening_name %} · {{ v.eco }} {{ v.opening_name }}{% endif %}
     {% if v.focus %} · 关注方：{{ v.focus }}{% endif %}
   </div>
-
-  {% if v.deviation %}
-    <div class="callout">
-      <strong>开局脱谱</strong>：第 {{ v.deviation.move_number }} 回合
-      （{{ v.deviation.side }}）走了 <span class="played">{{ v.deviation.played }}</span>
-      {% if v.deviation.book %} — 理论主线是 <span class="best">{{ v.deviation.book }}</span>{% endif %}。
-    </div>
-  {% else %}
-    <div class="callout">开局全程在已知理论之内。</div>
-  {% endif %}
 
   {% macro summary_block(sm) %}
   <div class="summary">
@@ -93,7 +88,7 @@
 
   {% macro turning_block(t) %}
   <div class="callout">
-    第 {{ t.move_number }} 回合（{{ t.side }}）
+    <strong>转折点：</strong>第 {{ t.move_number }} 回合（{{ t.side }}）
     <span class="played">{{ t.played }}</span>：
     评估 {{ t.eval_before }} → {{ t.eval_after }}
     （{{ t['for'] }}此后再没回来）；应走
@@ -102,8 +97,8 @@
   </div>
   {% endmacro %}
 
-  {% macro moments_block(moments) %}
-  {% if not moments %}<p class="stat">没有超过阈值的问题着法。</p>{% endif %}
+  {% macro moments_block(moments, empty_msg) %}
+  {% if not moments %}<p class="stat">{{ empty_msg }}</p>{% endif %}
   {% for m in moments %}
   <div class="moment">
     <div class="board">{{ m.svg | safe }}</div>
@@ -125,6 +120,53 @@
   {% endfor %}
   {% endmacro %}
 
+  {% macro phase_summary(phase_zh, moments) %}
+  {% set bl = moments | selectattr('classification','equalto','blunder') | list | length %}
+  {% set mi = moments | selectattr('classification','equalto','mistake') | list | length %}
+  {% set inn = moments | selectattr('classification','equalto','inaccuracy') | list | length %}
+  {% if moments | length == 0 %}
+    <p class="stat">{{ phase_zh }}没有达到阈值的问题着法，走得比较稳。</p>
+  {% else %}
+    {% set parts = [] %}
+    {% if bl %}{% set _ = parts.append(bl ~ ' 个漏着') %}{% endif %}
+    {% if mi %}{% set _ = parts.append(mi ~ ' 个错着') %}{% endif %}
+    {% if inn %}{% set _ = parts.append(inn ~ ' 个不精确') %}{% endif %}
+    <p class="stat">{{ phase_zh }}出现 {{ parts | join('、') }}，下面逐条来看。</p>
+  {% endif %}
+  {% endmacro %}
+
+  {% macro opening_block(sec) %}
+  <div class="opening">
+    <ul>
+      {% if sec.eco or sec.name %}<li><b>开局定式：</b>{{ sec.eco }} {{ sec.name }}</li>{% endif %}
+      {% if sec.line_played %}<li><b>实战着法：</b><span class="mono">{{ sec.line_played }}</span></li>{% endif %}
+      {% if sec.deviation %}
+        <li><b>首个脱谱点：</b>第 {{ sec.deviation.move_number }} 回合 {{ sec.deviation.side }} 走了
+          <span class="played">{{ sec.deviation.played }}</span>{% if sec.deviation.in_masters %}（该着仍在大师库内，只是较少见）{% endif %}。</li>
+      {% elif sec.in_book_full %}
+        <li><b>脱谱点：</b>全程跟随理论主线，没有脱谱。</li>
+      {% endif %}
+      {% if sec.book_choices %}
+        <li><b>{{ '大师库' if sec.book_source == 'masters' else '本地开局库' }}推荐着法：</b>
+        {% for bc in sec.book_choices %}
+          {{ '首选' if loop.index0 == 0 else '次选' }} <span class="best">{{ bc.san }}</span>{% if bc.games is not none %}（{{ bc.pct }}% 采用{% if bc.avg_rating %}，平均等级分 {{ bc.avg_rating }}{% endif %}）{% endif %}{% if not loop.last %}；{% endif %}
+        {% endfor %}</li>
+      {% endif %}
+      {% if sec.reference %}
+        <li><b>高手参考对局：</b>{{ sec.reference.white }}({{ sec.reference.white_rating }})
+          vs {{ sec.reference.black }}({{ sec.reference.black_rating }}){% if sec.reference.year %}，{{ sec.reference.year }}{% endif %}，{{ sec.reference.winner_zh }}
+          {% if sec.reference.url %} — <a href="{{ sec.reference.url }}">棋谱 ↗</a>{% endif %}</li>
+      {% endif %}
+      {% if not sec.available and sec.book_source != 'local' %}
+        <li class="stat">大师开局库暂不可用（本次离线）；联网后此处会显示采用率与高手对局。</li>
+      {% endif %}
+    </ul>
+  </div>
+  {% endmacro %}
+
+  <!-- ===================== 一、总结 ===================== -->
+  <h2>一、总结</h2>
+  {% if v.summary_zh %}{{ summary_block(v.summary_zh) }}{% endif %}
   <div class="cards">
     {% for side in [v.white_summary, v.black_summary] %}
     <div class="card">
@@ -138,29 +180,39 @@
             <td>{{ side.phases[ph].blunders }}</td><td>{{ side.phases[ph].mistakes }}</td></tr>
         {% endfor %}
       </table>
-      {% if side.biggest %}
-      <div class="stat" style="margin-top:8px">最大失误：第 {{ side.biggest.move_number }} 回合
-        <span class="played">{{ side.biggest.played }}</span>（应走
-        <span class="best">{{ side.biggest.best }}</span>，-{{ side.biggest.cp_loss }}cp）
-        · <a href="{{ side.biggest.lichess }}">打开分析</a></div>
-      {% endif %}
     </div>
     {% endfor %}
   </div>
+  {% if v.turning_point %}{{ turning_block(v.turning_point) }}{% endif %}
+
+  <!-- ===================== 二、开局板块 ===================== -->
+  <h2>二、开局板块</h2>
+  {{ opening_block(v.opening_section) }}
+  {% set open_m = v.critical_moments | selectattr('phase_key','equalto','opening') | list %}
+  <h3>开局阶段问题着法</h3>
+  {{ moments_block(open_m, '开局阶段走得干净，没有明显失误。') }}
 
   {% if v.dual and v.perspectives %}
     {% for p in v.perspectives %}
     <h2 class="persp">【{{ p.side }}视角】{{ p.name }}</h2>
-    {{ summary_block(p.summary_zh) }}
-    {% if p.turning_point %}<h3>转折点</h3>{{ turning_block(p.turning_point) }}{% endif %}
-    <h3>关键时刻逐步解释</h3>
-    {{ moments_block(p.critical_moments) }}
+    {% set mid_m = p.critical_moments | selectattr('phase_key','equalto','middlegame') | list %}
+    {% set end_m = p.critical_moments | selectattr('phase_key','equalto','endgame') | list %}
+    <h3>中局板块</h3>
+    {{ phase_summary('中局', mid_m) }}
+    {{ moments_block(mid_m, '中局走得比较稳，没有需要专门讲解的着法。') }}
+    <h3>残局板块</h3>
+    {{ phase_summary('残局', end_m) }}
+    {{ moments_block(end_m, '残局走得比较稳，没有需要专门讲解的着法。') }}
     {% endfor %}
   {% else %}
-    {% if v.summary_zh %}{{ summary_block(v.summary_zh) }}{% endif %}
-    {% if v.turning_point %}<h2>转折点</h2>{{ turning_block(v.turning_point) }}{% endif %}
-    <h2>关键时刻逐步解释</h2>
-    {{ moments_block(v.critical_moments) }}
+    {% set mid_m = v.critical_moments | selectattr('phase_key','equalto','middlegame') | list %}
+    {% set end_m = v.critical_moments | selectattr('phase_key','equalto','endgame') | list %}
+    <h2>三、中局板块</h2>
+    {{ phase_summary('中局', mid_m) }}
+    {{ moments_block(mid_m, '中局走得比较稳，没有需要专门讲解的着法。') }}
+    <h2>四、残局板块</h2>
+    {{ phase_summary('残局', end_m) }}
+    {{ moments_block(end_m, '残局走得比较稳，没有需要专门讲解的着法。') }}
   {% endif %}
 
   <p class="stat" style="margin-top:40px">绿箭 = 引擎最佳着法 · 红箭 = 实走。由 chess-review 生成。</p>

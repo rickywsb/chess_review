@@ -4,7 +4,7 @@ import io
 import chess
 import chess.pgn
 
-from chess_review.classify import classify_loss, classify_phase, non_pawn_material
+from chess_review.classify import classify_loss, classify_phase, non_pawn_material, has_queens
 from chess_review.models import GameAnalysis, MoveAnalysis
 
 
@@ -33,6 +33,22 @@ def test_phase_middlegame():
     # Advance the full-move counter past the opening without trading material.
     board.set_fen("r1bqkb1r/pppppppp/2n2n2/8/8/2N2N2/PPPPPPPP/R1BQKB1R w KQkq - 0 20")
     assert classify_phase(board) == "middlegame"
+
+
+def test_phase_endgame_by_no_queens():
+    # Queens already off the board early -> endgame regardless of move number.
+    board = chess.Board("r1b1kb1r/pppp1ppp/2n2n2/8/8/2N2N2/PPPP1PPP/R1B1KB1R w KQkq - 0 10")
+    assert not has_queens(board)
+    assert classify_phase(board) == "endgame"
+
+
+def test_phase_opening_only_when_in_book():
+    # Move <=15 with a loaded book: opening only while still following theory.
+    board = chess.Board()
+    board.set_fen("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
+    assert classify_phase(board, in_book=True, book_loaded=True) == "opening"
+    # Same position but already out of book -> middlegame (queens still on board).
+    assert classify_phase(board, in_book=False, book_loaded=True) == "middlegame"
 
 
 def test_game_analysis_helpers():

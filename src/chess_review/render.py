@@ -143,6 +143,7 @@ def _critical_moments(ga: GameAnalysis, color: Optional[bool], threshold: int,
             "eval_before": format_eval(m.eval_before_mover, m.mate_before),
             "eval_after": format_eval(m.eval_after_mover, m.mate_after),
             "phase": PHASE_ZH.get(m.phase, m.phase),
+            "phase_key": m.phase,
             "classification": m.classification,
             "class_zh": CLASS_ZH.get(m.classification, m.classification),
             "forcing_miss": m.is_forcing_miss,
@@ -207,6 +208,135 @@ def _side_summary(ga: GameAnalysis, color: bool) -> dict:
     }
 
 
+WINNER_ZH = {"white": "白胜", "black": "黑胜", "": "和棋", "draw": "和棋"}
+
+
+def _san_line(moves: list, plies: int = 10) -> str:
+    """Render the first `plies` half-moves as '1. e4 e5 2. Nf3 ...'."""
+    out: list[str] = []
+    for m in moves[:plies]:
+        if m.color == chess.WHITE:
+            out.append(f"{m.move_number}. {m.san}")
+        elif not out:
+            out.append(f"{m.move_number}... {m.san}")
+        else:
+            out.append(m.san)
+    return " ".join(out)
+
+
+def _game_url(game_id: str) -> str:
+    return f"https://lichess.org/{game_id}" if game_id else ""
+
+
+def build_opening_section(ga: GameAnalysis, explorer=None) -> dict:
+    """Assemble the opening breakdown: ECO, the played line, the first
+    out-of-book move, the top book choices and a master reference game (lichess
+    masters explorer when reachable; the local opening book as a fallback)."""
+    moves = ga.moves
+    line_played = _san_line(moves, plies=10)
+
+    dev_move = None
+    if ga.deviation_ply is not None:
+        dev_move = next((m for m in moves if m.ply == ga.deviation_ply), None)
+
+    eco = ga.eco
+    name = ga.opening_name
+    book_choices: list[dict] = []
+    book_source = None
+    reference = None
+
+    # Query the position *before* the first out-of-book move; if the game never
+    # left theory, query the last opening-phase position.
+    query_fen = None
+    if dev_move is not None:
+        query_fen = dev_move.fen_before
+    else:
+        opening_moves = [m for m in moves if m.phase == "opening"]
+        if opening_moves:
+            query_fen = opening_moves[-1].fen_after
+        elif moves:
+            query_fen = moves[min(len(moves) - 1, 9)].fen_after
+
+    data = explorer.lookup(query_fen) if (explorer is not None and query_fen) else None
+    played_in_masters = False
+    if data is not None:
+        book_source = "masters"
+        if data.eco:
+            eco = data.eco
+        if data.name:
+            name = data.name
+        for em in data.moves[:2]:
+            book_choices.append({
+                "san": em.san,
+                "games": em.games,
+                "pct": round(em.games / data.total_games * 100, 1) if data.total_games else None,
+                "avg_rating": em.avg_rating or None,
+                "white_pct": round(em.white_score_pct()) if em.games else None,
+            })
+        if data.top_games:
+            g = data.top_games[0]
+            reference = {
+                "white": g.white_name, "white_rating": g.white_rating,
+                "black": g.black_name, "black_rating": g.black_rating,
+                "winner_zh": WINNER_ZH.get(g.winner, "和棋"),
+                "year": g.year, "url": _game_url(g.game_id),
+            }
+        if dev_move is not None:
+            played_in_masters = any(em.san == dev_move.san for em in data.moves)
+        else:
+            played_in_masters = True
+    elif ga.deviation_book_san:
+        book_source = "local"
+        book_choices.append({"san": ga.deviation_book_san, "games": None,
+                             "pct": None, "avg_rating": None, "white_pct": None})
+
+    deviation = None
+    if dev_move is not None:
+        deviation = {
+            "move_number": dev_move.move_number,
+            "side": "白方" if dev_move.color == chess.WHITE else "黑方",
+            "played": dev_move.san,
+            "cp_loss": dev_move.cp_loss,
+            "in_masters": played_in_masters,
+            "lichess": lichess_url(dev_move.fen_before),
+        }
+
+    return {
+        "eco": eco or "",
+        "name": name or "",
+        "line_played": line_played,
+        "deviation": deviation,
+        "in_book_full": ga.deviation_ply is None and bool(ga.opening_name),
+        "book_choices": book_choices,
+        "book_source": book_source,
+        "reference": reference,
+        "available": data is not None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# phase grouping
+# ---------------------------------------------------------------------------
+def _phase_moments(moments: list, phase_key: str) -> list:
+    return [m for m in moments if m.get("phase_key") == phase_key]
+
+
+def _phase_summary_zh(phase_zh: str, group: list) -> str:
+    if not group:
+        return f"{phase_zh}没有达到阈值的问题着法，走得比较稳。"
+    n_bl = sum(1 for m in group if m["classification"] == "blunder")
+    n_mi = sum(1 for m in group if m["classification"] == "mistake")
+    n_in = sum(1 for m in group if m["classification"] == "inaccuracy")
+    parts = []
+    if n_bl:
+        parts.append(f"{n_bl} 个漏着")
+    if n_mi:
+        parts.append(f"{n_mi} 个错着")
+    if n_in:
+        parts.append(f"{n_in} 个不精确")
+    return f"{phase_zh}出现 " + "、".join(parts) + "，下面逐条来看。"
+
+
 def _perspective_block(ga: GameAnalysis, color: bool, threshold: int,
                        with_svg: bool) -> dict:
     """Full single-side perspective: narrative + critical moments + turning point."""
@@ -226,7 +356,7 @@ def _perspective_block(ga: GameAnalysis, color: bool, threshold: int,
 
 def build_game_view(ga: GameAnalysis, player: Optional[str] = None,
                     threshold: int = MISTAKE, with_svg: bool = True,
-                    dual: bool = False) -> dict:
+                    dual: bool = False, explorer=None) -> dict:
     focus_color = ga.player_color(player) if player else None
 
     losers = []
@@ -268,6 +398,7 @@ def build_game_view(ga: GameAnalysis, player: Optional[str] = None,
         "white_summary": _side_summary(ga, chess.WHITE),
         "black_summary": _side_summary(ga, chess.BLACK),
         "turning_point": turning,
+        "opening_section": build_opening_section(ga, explorer),
         "critical_moments": _critical_moments(ga, focus_color, threshold, with_svg),
         "n_moves": len(ga.moves),
     }
@@ -286,32 +417,15 @@ def _pct(x: float) -> str:
     return f"{x * 100:.1f}%"
 
 
-def _md_summary(L: list, sm: dict) -> None:
-    L.append(f"## 总评 · {sm['focus_name']}（{sm['side']}·{sm['result_text']}）")
-    L.append(f"> **{sm['headline']}**")
-    L.append("")
-    L.append("**做得好的：**")
-    for item in sm["good"]:
-        L.append(f"- {item}")
-    L.append("")
-    L.append("**做得不好的：**")
-    for item in sm["bad"]:
-        L.append(f"- {item}")
-    L.append("")
-    L.append("**训练建议：**")
-    for item in sm["advice"]:
-        L.append(f"- {item}")
-    L.append("")
-
-
-def _md_critical(L: list, moments: list, heading: str = "## 关键时刻逐步解释") -> None:
-    L.append(heading)
+def _md_critical(L: list, moments: list, empty_msg: str = "_没有超过阈值的问题着法。_") -> None:
     if not moments:
-        L.append("_没有超过阈值的问题着法。_")
+        L.append(empty_msg)
+        L.append("")
+        return
     for m in moments:
         e = m["explain"]
-        L.append(f"### 第 {m['move_number']} 回合 · {m['side']} · {m['class_zh']}"
-                 f"（{m['phase']}，损失 -{m['cp_loss']}cp）")
+        L.append(f"#### 第 {m['move_number']} 回合 · {m['side']} · {m['class_zh']}"
+                 f"（损失 -{m['cp_loss']}cp）")
         L.append(f"- 实走 `{m['played']}` → 应走 `{m['best']}`"
                  f"（{m['eval_before']} → {m['eval_after']}）")
         L.append(f"- **为什么错：** {e['why']}")
@@ -319,6 +433,59 @@ def _md_critical(L: list, moments: list, heading: str = "## 关键时刻逐步�
         L.append(f"- **应该怎么做：** {e['what_to_do']}")
         L.append(f"- [在 lichess 上打开这个局面]({m['lichess']})")
         L.append("")
+
+
+def _md_opening(L: list, sec: dict) -> None:
+    if sec.get("eco") or sec.get("name"):
+        L.append(f"- **开局定式：** {(sec['eco'] + ' ' + sec['name']).strip()}")
+    if sec.get("line_played"):
+        L.append(f"- **实战着法：** {sec['line_played']}")
+    if sec.get("deviation"):
+        d = sec["deviation"]
+        tail = "（该着仍在大师库内，只是较少见）" if d["in_masters"] else ""
+        L.append(f"- **首个脱谱点：** 第 {d['move_number']} 回合 {d['side']} 走了 "
+                 f"`{d['played']}`{tail}。")
+    elif sec.get("in_book_full"):
+        L.append("- **脱谱点：** 全程跟随理论主线，没有脱谱。")
+    if sec.get("book_choices"):
+        labels = ["首选", "次选"]
+        parts = []
+        for i, bc in enumerate(sec["book_choices"]):
+            lbl = labels[i] if i < len(labels) else f"选择{i + 1}"
+            if bc.get("games") is not None:
+                extra = f"（{bc['pct']}% 采用"
+                if bc.get("avg_rating"):
+                    extra += f"，平均等级分 {bc['avg_rating']}"
+                extra += "）"
+                parts.append(f"{lbl} `{bc['san']}`{extra}")
+            else:
+                parts.append(f"{lbl} `{bc['san']}`")
+        src = "大师库" if sec.get("book_source") == "masters" else "本地开局库"
+        L.append(f"- **{src}推荐着法：** " + "；".join(parts) + "。")
+    if sec.get("reference"):
+        r = sec["reference"]
+        yr = f"，{r['year']}" if r.get("year") else ""
+        link = f" — [棋谱]({r['url']})" if r.get("url") else ""
+        L.append(f"- **高手参考对局：** {r['white']}({r['white_rating']}) vs "
+                 f"{r['black']}({r['black_rating']}){yr}，{r['winner_zh']}{link}")
+    if not sec.get("available") and sec.get("book_source") != "local":
+        L.append("- _大师开局库暂不可用（本次离线），联网后此处会显示采用率与高手对局。_")
+    L.append("")
+
+
+def _md_phase(L: list, title: str, phase_zh: str, moments: list) -> None:
+    L.append(f"## {title}")
+    L.append(_phase_summary_zh(phase_zh, moments))
+    L.append("")
+    _md_critical(L, moments, empty_msg=f"{phase_zh}走得比较稳，没有需要专门讲解的着法。")
+
+
+def _md_turning(L: list, t: dict) -> None:
+    L.append("**转折点：** "
+             f"第 {t['move_number']} 回合 {t['side']} `{t['played']}`"
+             f"（{t['eval_before']} → {t['eval_after']}），{t['for']}此后再没回来；"
+             f"应走 `{t['best']}`。[打开分析]({t['lichess']})")
+    L.append("")
 
 
 def render_game_markdown(view: dict) -> str:
@@ -332,61 +499,60 @@ def render_game_markdown(view: dict) -> str:
         L.append(f"_{meta}_")
     L.append("")
 
-    if view["deviation"]:
-        d = view["deviation"]
-        book = f"（理论主线 {d['book']}）" if d["book"] else ""
-        L.append(f"**开局脱谱：** 第 {d['move_number']} 回合 {d['side']} 走了 "
-                 f"`{d['played']}`{book}。")
-    else:
-        L.append("**开局：** 全程在已知理论之内。")
-    L.append("")
-
-    # ---- stat cards for both sides (always) --------------------------------
-    for label, s in [("白方", view["white_summary"]), ("黑方", view["black_summary"])]:
-        L.append(f"## {label} — {s['name']}")
-        L.append(f"- 平均每步损失（ACPL）：**{s['acpl']}** · 漏着 {s['blunders']} · "
-                 f"错着 {s['mistakes']} · 不精确 {s['inaccuracies']}")
-        L.append("- 分阶段（ACPL / 漏着 / 错着）：")
-        for ph in PHASES:
-            p = s["phases"][ph]
-            L.append(f"    - {PHASE_ZH.get(ph, ph)}：{p['acpl']}（{p['moves']} 步），"
-                     f"漏着 {p['blunders']} / 错着 {p['mistakes']}")
-        if s["biggest"]:
-            b = s["biggest"]
-            L.append(f"- 最大失误：第 {b['move_number']} 回合 `{b['played']}` "
-                     f"（应走 `{b['best']}`，损失 -{b['cp_loss']}cp）— [打开分析]({b['lichess']})")
+    # ===================== 一、总结 =========================================
+    L.append("## 一、总结")
+    sm = view.get("summary_zh")
+    if sm:
+        L.append(f"> **{sm['headline']}**")
+        L.append("")
+        L.append("**做得好的：**")
+        for item in sm["good"]:
+            L.append(f"- {item}")
+        L.append("")
+        L.append("**做得不好的：**")
+        for item in sm["bad"]:
+            L.append(f"- {item}")
+        L.append("")
+        L.append("**训练建议：**")
+        for item in sm["advice"]:
+            L.append(f"- {item}")
         L.append("")
 
+    for label, s in [("白方", view["white_summary"]), ("黑方", view["black_summary"])]:
+        L.append(f"**{label} · {s['name']}** — 平均每步损失（ACPL）**{s['acpl']}**："
+                 f"漏着 {s['blunders']} · 错着 {s['mistakes']} · 不精确 {s['inaccuracies']}")
+        seg = []
+        for ph in PHASES:
+            p = s["phases"][ph]
+            if p["moves"]:
+                seg.append(f"{PHASE_ZH.get(ph, ph)} {p['acpl']}")
+        if seg:
+            L.append("- 分阶段 ACPL：" + " / ".join(seg))
+    L.append("")
+    if view.get("turning_point"):
+        _md_turning(L, view["turning_point"])
+
+    # ===================== 二、开局板块 =====================================
+    L.append("## 二、开局板块")
+    _md_opening(L, view["opening_section"])
+    open_moments = _phase_moments(view["critical_moments"], "opening")
+    L.append("**开局阶段问题着法：**")
+    L.append("")
+    _md_critical(L, open_moments, empty_msg="开局阶段走得干净，没有明显失误。")
+
     if view.get("dual") and view.get("perspectives"):
-        # ---- dual: full narrative + critical moments per side --------------
+        # per-side middlegame / endgame breakdowns
         for p in view["perspectives"]:
             L.append(f"# 【{p['side']}视角】{p['name']}")
             L.append("")
-            _md_summary(L, p["summary_zh"])
-            if p["turning_point"]:
-                t = p["turning_point"]
-                L.append("## 转折点")
-                L.append(f"第 {t['move_number']} 回合 {t['side']} `{t['played']}`"
-                         f"（{t['eval_before']} → {t['eval_after']}），{t['for']}此后再没回来；"
-                         f"应走 `{t['best']}`。[打开分析]({t['lichess']})")
-                L.append("")
-            _md_critical(L, p["critical_moments"])
+            _md_phase(L, "中局板块", "中局", _phase_moments(p["critical_moments"], "middlegame"))
+            _md_phase(L, "残局板块", "残局", _phase_moments(p["critical_moments"], "endgame"))
         return "\n".join(L)
 
-    # ---- single focus mode --------------------------------------------------
-    sm = view.get("summary_zh")
-    if sm:
-        _md_summary(L, sm)
-
-    if view["turning_point"]:
-        t = view["turning_point"]
-        L.append("## 转折点")
-        L.append(f"第 {t['move_number']} 回合 {t['side']} `{t['played']}`"
-                 f"（{t['eval_before']} → {t['eval_after']}），{t['for']}此后再没回来；"
-                 f"应走 `{t['best']}`。[打开分析]({t['lichess']})")
-        L.append("")
-
-    _md_critical(L, view["critical_moments"])
+    # ===================== 三、中局板块 =====================================
+    _md_phase(L, "三、中局板块", "中局", _phase_moments(view["critical_moments"], "middlegame"))
+    # ===================== 四、残局板块 =====================================
+    _md_phase(L, "四、残局板块", "残局", _phase_moments(view["critical_moments"], "endgame"))
     return "\n".join(L)
 
 

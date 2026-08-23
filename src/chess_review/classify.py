@@ -26,12 +26,13 @@ def classify_loss(cp_loss: int) -> str:
 
 
 # ---- phase detection --------------------------------------------------------
-# Opening   = first 15 full moves.
-# Endgame   = total non-pawn material (both sides, kings excluded) <= 26,
-#             or <= 20 while any queen remains on the board.
+# Opening   = still following book theory AND within the first 15 full moves
+#             (once a side leaves book, or after move 15, we call it middlegame).
+# Endgame   = queens are off the board, OR the game has reached move 50, OR very
+#             little material remains even with queens on.
 # Otherwise = middlegame.
 OPENING_LAST_MOVE = 15
-ENDGAME_MATERIAL = 26
+ENDGAME_MOVE = 50
 ENDGAME_MATERIAL_WITH_QUEENS = 20
 
 _PIECE_POINTS = {
@@ -54,12 +55,29 @@ def has_queens(board: chess.Board) -> bool:
     return bool(board.pieces(chess.QUEEN, chess.WHITE) or board.pieces(chess.QUEEN, chess.BLACK))
 
 
-def classify_phase(board: chess.Board) -> str:
-    """Classify the phase of `board` (the position before a move is played)."""
-    if board.fullmove_number <= OPENING_LAST_MOVE:
-        return "opening"
-    npm = non_pawn_material(board)
-    threshold = ENDGAME_MATERIAL_WITH_QUEENS if has_queens(board) else ENDGAME_MATERIAL
-    if npm <= threshold:
+def classify_phase(board: chess.Board, in_book: bool = True,
+                   book_loaded: bool = False) -> str:
+    """Classify the phase of `board` (the position before a move is played).
+
+    `in_book` says whether the position is still within opening theory; it is
+    only trusted when `book_loaded` is True. When no book is available we fall
+    back to the move-number heuristic for the opening.
+    """
+    mn = board.fullmove_number
+
+    # ---- endgame (checked first) -------------------------------------------
+    # Queens off the board is the classic endgame signal; move 50+ or almost no
+    # material also qualify.
+    if not has_queens(board):
         return "endgame"
+    if mn >= ENDGAME_MOVE:
+        return "endgame"
+    if non_pawn_material(board) <= ENDGAME_MATERIAL_WITH_QUEENS:
+        return "endgame"
+
+    # ---- opening -----------------------------------------------------------
+    if mn <= OPENING_LAST_MOVE and (in_book or not book_loaded):
+        return "opening"
+
+    # ---- middlegame --------------------------------------------------------
     return "middlegame"

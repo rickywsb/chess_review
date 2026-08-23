@@ -82,6 +82,7 @@ def create_app() -> Flask:
         player = (request.form.get("player") or "").strip() or None
         depth = _clamp_int(request.form.get("depth"), 14, 6, 24)
         max_games = _clamp_int(request.form.get("max_games"), 20, 1, 200)
+        use_explorer = request.form.get("explorer", "1") not in ("0", "false", "off", "")
 
         if not pgn_text.strip():
             return jsonify(ok=False, error="没有收到 PGN，请拖入或粘贴对局。"), 400
@@ -110,8 +111,12 @@ def create_app() -> Flask:
                 game = games[0]
                 ga = analyze_game(game, engine, book=_book(), progress=False)
                 dual = (mode == "student")
+                explorer = None
+                if use_explorer:
+                    from .explorer import OpeningExplorer
+                    explorer = OpeningExplorer()
                 view = build_game_view(ga, player=player, threshold=MISTAKE,
-                                       with_svg=True, dual=dual)
+                                       with_svg=True, dual=dual, explorer=explorer)
                 html = render_game_html(view)
                 w, b = ga.white, ga.black
                 mode_zh = "双方视角" if dual else f"聚焦 {player or '未指定'}"
