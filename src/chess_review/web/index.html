@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chess Review · 对局复盘</title>
+<style>
+  :root { --ink:#1a1a1a; --muted:#666; --line:#e2e2e2; --accent:#1565c0; --bg:#f4f5f7; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", Segoe UI, Roboto, sans-serif;
+         color: var(--ink); margin: 0; background: var(--bg); line-height: 1.5; }
+  header { background:#1a1a1a; color:#fff; padding:16px 24px; }
+  header h1 { margin:0; font-size:20px; }
+  header p { margin:4px 0 0; color:#bbb; font-size:13px; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 24px; }
+  .panel { background:#fff; border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:20px; }
+  .modes { display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; margin-bottom:8px; }
+  .mode { border:2px solid var(--line); border-radius:10px; padding:14px; cursor:pointer; transition:.15s; background:#fafafa; }
+  .mode:hover { border-color:#bcd; }
+  .mode.active { border-color:var(--accent); background:#e7f0fb; }
+  .mode h3 { margin:0 0 6px; font-size:15px; }
+  .mode p { margin:0; font-size:12px; color:var(--muted); }
+  .mode .tag { display:inline-block; font-size:11px; padding:1px 7px; border-radius:9px; background:#eef2f7; color:#37474f; margin-top:8px; }
+  .drop { border:2px dashed #bbb; border-radius:12px; padding:30px; text-align:center; color:var(--muted);
+          background:#fbfbfb; transition:.15s; cursor:pointer; }
+  .drop.hover { border-color:var(--accent); background:#eef5ff; color:var(--accent); }
+  .drop strong { color:var(--ink); }
+  textarea { width:100%; min-height:120px; margin-top:12px; border:1px solid var(--line); border-radius:8px;
+             padding:10px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size:12px; resize:vertical; }
+  .row { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; margin-top:14px; }
+  .field { display:flex; flex-direction:column; gap:4px; }
+  .field label { font-size:12px; color:var(--muted); }
+  .field input { border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:14px; min-width:160px; }
+  .field input[type=number] { min-width:90px; }
+  button.go { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:11px 22px;
+              font-size:15px; font-weight:600; cursor:pointer; }
+  button.go:disabled { background:#9db8d6; cursor:default; }
+  .hint { font-size:12px; color:var(--muted); margin-top:8px; }
+  .status { margin:14px 0; font-size:14px; }
+  .status .err { color:#c62828; }
+  .spinner { display:inline-block; width:14px; height:14px; border:2px solid #ccd; border-top-color:var(--accent);
+             border-radius:50%; animation:spin .8s linear infinite; vertical-align:-2px; margin-right:6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .filechip { font-size:13px; color:var(--ink); margin-top:8px; }
+  iframe { width:100%; height:78vh; border:1px solid var(--line); border-radius:10px; background:#fff; }
+  .resultbar { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  .resultbar a { color:var(--accent); text-decoration:none; font-size:13px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Chess Review · 对局复盘</h1>
+  <p>拖入 PGN，一键生成中文分析报告（引擎：本地 Stockfish）</p>
+</header>
+
+<div class="wrap">
+  <div class="panel">
+    <div class="modes">
+      <div class="mode active" data-mode="student">
+        <h3>① 学员对局分析</h3>
+        <p>对一盘棋给出黑白双方各自的完整复盘，适合教学。</p>
+        <span class="tag">双方视角</span>
+      </div>
+      <div class="mode" data-mode="player">
+        <h3>② 某位棋手对局</h3>
+        <p>只聚焦某一位棋手的问题着法与建议。</p>
+        <span class="tag">单方视角</span>
+      </div>
+      <div class="mode" data-mode="backtest">
+        <h3>③ 棋手历史回测</h3>
+        <p>一次导入多局，汇总该棋手的长期表现与短板。</p>
+        <span class="tag">批量报告</span>
+      </div>
+    </div>
+
+    <div id="drop" class="drop">
+      <p>把 <strong>.pgn</strong> 文件拖到这里，或 <strong>点击选择文件</strong></p>
+      <div id="filechip" class="filechip"></div>
+      <input id="file" type="file" accept=".pgn,.txt" class="hidden">
+    </div>
+    <textarea id="pgn" placeholder="… 或直接把 PGN 文本粘贴到这里"></textarea>
+
+    <div class="row">
+      <div class="field" id="playerField">
+        <label>棋手名字（与 PGN 中一致）</label>
+        <input id="player" type="text" placeholder="例如 EvelynZhao2015">
+      </div>
+      <div class="field">
+        <label>引擎深度</label>
+        <input id="depth" type="number" value="14" min="6" max="24">
+      </div>
+      <div class="field hidden" id="maxField">
+        <label>最多分析局数</label>
+        <input id="maxGames" type="number" value="20" min="1" max="200">
+      </div>
+      <button id="go" class="go">开始分析</button>
+    </div>
+    <div class="hint" id="modeHint">当前模式：学员对局分析（双方视角）。棋手名字可留空。</div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="panel hidden" id="resultPanel">
+    <div class="resultbar">
+      <strong id="resultTitle"></strong>
+      <a id="openTab" href="#" target="_blank">在新标签页打开 ↗</a>
+    </div>
+    <iframe id="result"></iframe>
+  </div>
+</div>
+
+<script>
+  let mode = "student";
+  const $ = (id) => document.getElementById(id);
+
+  const hints = {
+    student: "当前模式：学员对局分析（双方视角）。棋手名字可留空。",
+    player: "当前模式：某位棋手对局（单方视角）。请填写棋手名字。",
+    backtest: "当前模式：棋手历史回测。导入含多局的 PGN，并填写棋手名字。",
+  };
+
+  document.querySelectorAll(".mode").forEach((el) => {
+    el.addEventListener("click", () => {
+      document.querySelectorAll(".mode").forEach((m) => m.classList.remove("active"));
+      el.classList.add("active");
+      mode = el.dataset.mode;
+      $("modeHint").textContent = hints[mode];
+      $("maxField").classList.toggle("hidden", mode !== "backtest");
+      $("playerField").style.opacity = mode === "student" ? .6 : 1;
+    });
+  });
+
+  // ---- file drag & drop --------------------------------------------------
+  const drop = $("drop"), fileInput = $("file");
+  drop.addEventListener("click", () => fileInput.click());
+  ["dragenter", "dragover"].forEach((e) =>
+    drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.add("hover"); }));
+  ["dragleave", "drop"].forEach((e) =>
+    drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.remove("hover"); }));
+  drop.addEventListener("drop", (ev) => {
+    const f = ev.dataTransfer.files[0];
+    if (f) { fileInput.files = ev.dataTransfer.files; showFile(f); }
+  });
+  fileInput.addEventListener("change", () => {
+    if (fileInput.files[0]) showFile(fileInput.files[0]);
+  });
+  function showFile(f) {
+    $("filechip").textContent = "已选择：" + f.name + "（" + Math.round(f.size / 1024) + " KB）";
+    $("pgn").value = "";
+  }
+
+  // ---- submit ------------------------------------------------------------
+  $("go").addEventListener("click", async () => {
+    const status = $("status");
+    const fd = new FormData();
+    fd.append("mode", mode);
+    fd.append("player", $("player").value.trim());
+    fd.append("depth", $("depth").value);
+    fd.append("max_games", $("maxGames").value);
+    if (fileInput.files[0]) fd.append("file", fileInput.files[0]);
+    else fd.append("pgn", $("pgn").value);
+
+    if (!fileInput.files[0] && !$("pgn").value.trim()) {
+      status.innerHTML = '<span class="err">请先拖入 PGN 文件或粘贴 PGN 文本。</span>';
+      return;
+    }
+
+    $("go").disabled = true;
+    status.innerHTML = '<span class="spinner"></span>正在分析，请稍候…（深度越高越慢）';
+    try {
+      const res = await fetch("/api/analyze", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!data.ok) {
+        status.innerHTML = '<span class="err">' + (data.error || "分析失败") + "</span>";
+      } else {
+        status.textContent = data.note ? ("完成（提示：" + data.note + "）") : "分析完成。";
+        $("resultTitle").textContent = data.title || "分析结果";
+        const frame = $("result");
+        frame.srcdoc = data.html;
+        const blob = new Blob([data.html], { type: "text/html" });
+        $("openTab").href = URL.createObjectURL(blob);
+        $("resultPanel").classList.remove("hidden");
+        $("resultPanel").scrollIntoView({ behavior: "smooth" });
+      }
+    } catch (e) {
+      status.innerHTML = '<span class="err">请求出错：' + e + "</span>";
+    } finally {
+      $("go").disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

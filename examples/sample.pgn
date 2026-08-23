@@ -1,0 +1,41 @@
+[Event "Club Rapid"]
+[Site "Online"]
+[Date "2025.03.14"]
+[Round "1"]
+[White "Test Player"]
+[Black "Opponent One"]
+[Result "1-0"]
+[WhiteElo "2050"]
+[BlackElo "1980"]
+[ECO "C50"]
+
+1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 4. Qxf7# 1-0
+
+[Event "Club Rapid"]
+[Site "Online"]
+[Date "2025.04.02"]
+[Round "2"]
+[White "Opponent Two"]
+[Black "Test Player"]
+[Result "1-0"]
+[WhiteElo "2110"]
+[BlackElo "2050"]
+[ECO "C23"]
+
+1. e4 e5 2. Bc4 Bc5 3. Qh5 Nf6 4. Qxf7# 1-0
+
+[Event "Club Classical"]
+[Site "Online"]
+[Date "2025.05.20"]
+[Round "3"]
+[White "Test Player"]
+[Black "Opponent Three"]
+[Result "1/2-1/2"]
+[WhiteElo "2050"]
+[BlackElo "2130"]
+[ECO "C95"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7 6. Re1 b5 7. Bb3 d6
+8. c3 O-O 9. h3 Nb8 10. d4 Nbd7 11. Nbd2 Bb7 12. Bc2 Re8 13. Nf1 Bf8
+14. Ng3 g6 15. a4 c5 16. d5 c4 17. Bg5 h6 18. Be3 Nc5 19. Qd2 h5
+20. Bg5 Be7 1/2-1/2

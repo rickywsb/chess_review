@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Player Report — {{ r.player }}</title>
+<style>
+  :root { --ink:#1a1a1a; --muted:#666; --line:#e2e2e2; --bg:#fafafa; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+         color: var(--ink); margin: 0; background: var(--bg); line-height: 1.5; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 32px 0 12px; border-bottom: 2px solid var(--ink); padding-bottom: 6px; }
+  .meta { color: var(--muted); font-size: 14px; }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 20px 0; }
+  .kpi { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; }
+  .kpi .big { font-size: 24px; font-weight: 800; }
+  .kpi .lbl { font-size: 12px; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; background:#fff;
+          border:1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; background:#f6f6f6; }
+  td.num, th.num { text-align: right; }
+  a { color:#1565c0; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { background:#f0f0f0; padding:1px 5px; border-radius: 4px; font-size: 12px; }
+  @media (max-width: 680px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Player Report — {{ r.player }}</h1>
+  {% if r.error %}
+    <p class="meta">{{ r.error }}</p>
+  {% else %}
+  <div class="meta">
+    {{ r.n_games }} games · {{ r.record.wins }}-{{ r.record.draws }}-{{ r.record.losses }}
+    ({{ r.record.score_pct | pct }}) · white {{ r.as_white }} / black {{ r.as_black }}
+    {% if r.avg_opponent %} · avg opponent {{ r.avg_opponent }}{% endif %}
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="big">{{ r.acpl }}</div><div class="lbl">overall ACPL</div></div>
+    <div class="kpi"><div class="big">{{ r.conversion.win_rate | pct }}</div><div class="lbl">winning-position conversion</div></div>
+    <div class="kpi"><div class="big">{{ r.resilience.save_rate | pct }}</div><div class="lbl">save rate when losing</div></div>
+    <div class="kpi"><div class="big">{{ r.blunders_total }}</div><div class="lbl">total blunders</div></div>
+  </div>
+
+  <h2>Where points are lost (by phase)</h2>
+  <table>
+    <tr><th>Phase</th><th class="num">Moves</th><th class="num">Avg loss</th>
+        <th class="num">Blunder %</th><th class="num">Mistake %</th></tr>
+    {% for p in r.phases %}
+    <tr><td>{{ p.phase }}</td><td class="num">{{ p.moves }}</td><td class="num">{{ p.avg_loss }}</td>
+        <td class="num">{{ p.blunder_rate | pct }}</td><td class="num">{{ p.mistake_rate | pct }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>Middlegame failure rate by move number</h2>
+  <table>
+    <tr><th>Moves</th><th class="num">N</th><th class="num">Failure rate (&ge;1 pawn)</th></tr>
+    {% for b in r.middlegame_by_move %}
+    <tr><td>{{ b.bucket }}</td><td class="num">{{ b.moves }}</td>
+        <td class="num">{{ b.failure_rate | pct }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>Converting winning positions (peak &ge; +2)</h2>
+  <p class="meta">{{ r.conversion.n }} games · {{ r.conversion.wins }}-{{ r.conversion.draws }}-{{ r.conversion.losses }}
+     · win rate <strong>{{ r.conversion.win_rate | pct }}</strong>
+     {% if r.conversion_vs_2000plus is not none %}
+       · vs 2000+ {{ r.conversion_vs_2000plus | pct }} · vs &lt;2000 {{ r.conversion_vs_sub2000 | pct }}
+     {% endif %}
+  </p>
+
+  <h2>Outcome by evaluation when entering the endgame</h2>
+  <table>
+    <tr><th>Entering endgame</th><th class="num">N</th><th>W-D-L</th><th class="num">Score</th></tr>
+    {% for e in r.endgame_entry %}
+    <tr><td>{{ e.label }}</td><td class="num">{{ e.n }}</td>
+        <td>{{ e.wins }}-{{ e.draws }}-{{ e.losses }}</td><td class="num">{{ e.score_pct | pct }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>Resilience when behind (&le; -2)</h2>
+  <p class="meta">{{ r.resilience.n }} games · saved {{ r.resilience.saved }}
+     · save rate <strong>{{ r.resilience.save_rate | pct }}</strong></p>
+
+  <h2>Biggest blunders</h2>
+  <table>
+    <tr><th>Date</th><th>Opponent</th><th class="num">Move</th><th>Played &rarr; Best</th>
+        <th class="num">Loss</th><th>Phase</th><th>Link</th></tr>
+    {% for b in r.top_blunders %}
+    <tr>
+      <td>{{ b.date }}</td>
+      <td>{{ b.opponent }}{% if b.opponent_rating %} ({{ b.opponent_rating }}){% endif %}</td>
+      <td class="num">{{ b.move_number }}</td>
+      <td><code>{{ b.played }}</code> &rarr; <code>{{ b.best }}</code></td>
+      <td class="num">-{{ b.cp_loss }}cp</td>
+      <td>{{ b.phase }}</td>
+      <td><a href="{{ lichess_url(b.fen) }}">analyse</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  <p class="meta" style="margin-top:40px">Generated by chess-review.</p>
+</div>
+</body>
+</html>

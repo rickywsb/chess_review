@@ -1,0 +1,19 @@
+[Event "Live Chess"]
+[Site "Chess.com"]
+[Date "2026.08.20"]
+[Round "?"]
+[White "Chess_Tactic_101"]
+[Black "EvelynZhao2015"]
+[Result "1-0"]
+[WhiteElo "1511"]
+[BlackElo "1103"]
+[ECO "C21"]
+[Termination "Chess_Tactic_101 won by resignation"]
+[TimeControl "2700+10"]
+[EndTime "3:08:53 GMT+0000"]
+[Link "https://www.chess.com/analysis/collection/autumn-2026-sunday-19-00-2zEtAeB6E/2GVXXogpb8/games"]
+
+1. e4 e5 2. d4 exd4 3. c3 Nf6 $6 4. e5 Nd5 5. cxd4 Nc6 6. Bc4 (6. Nc3 Nxc3 7.
+bxc3) 6... Bb4+ 7. Bd2 Bxd2+ 8. Qxd2 Nb6 9. Bb3 O-O 10. Nf3 d5 $6 (10... d6) 11.
+exd6 $2 cxd6 $6 (11... Re8+ 12. Kf1 Qxd6) 12. d5 Ne7 13. O-O Bf5 14. Nc3 Bg4 15.
+Qd3 Nf5 16. h3 Bxf3 17. Qxf5 Bxd5 18. Nxd5 Nxd5 19. Bxd5 Qa5 20. Bxf7+ 1-0

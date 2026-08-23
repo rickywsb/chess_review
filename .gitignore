@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# Generated reports
+reports/
+out/
+
+# Downloaded engine binaries
+src/chess_review/data/engines/
+
+# Downloaded opening book (regenerate with `chess-review setup`)
+src/chess_review/data/openings.tsv
+
+.DS_Store
+.pytest_cache/

@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>对局分析 — {{ v.white }} vs {{ v.black }}</title>
+<style>
+  :root { --ink:#1a1a1a; --muted:#666; --line:#e2e2e2; --red:#c62828; --green:#2e7d32; --bg:#fafafa; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+         color: var(--ink); margin: 0; background: var(--bg); line-height: 1.5; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 19px; margin: 32px 0 12px; border-bottom: 2px solid var(--ink); padding-bottom: 6px; }
+  .meta { color: var(--muted); font-size: 14px; margin-bottom: 16px; }
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+  .card h3 { margin: 0 0 8px; font-size: 16px; }
+  .stat { font-size: 13px; color: var(--muted); }
+  .big { font-size: 22px; font-weight: 700; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  .callout { background: #fff8e1; border-left: 4px solid #f9a825; padding: 12px 16px;
+             border-radius: 4px; margin: 12px 0; font-size: 14px; }
+  .summary { background:#fff; border:1px solid var(--line); border-radius: 10px;
+             padding: 18px 20px; margin: 18px 0; }
+  .summary .headline { font-size: 18px; font-weight: 800; line-height: 1.4; }
+  .summary .sub { color: var(--muted); font-size: 13px; margin: 6px 0 14px; }
+  .summary .sgrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  .summary .sbox { border-radius: 8px; padding: 12px 14px; }
+  .summary .sbox h4 { margin: 0 0 8px; font-size: 14px; }
+  .summary .sbox ul { margin: 0; padding-left: 18px; font-size: 13px; }
+  .summary .sbox li { margin-bottom: 5px; }
+  .summary .good { background:#e8f5e9; }
+  .summary .bad { background:#fdecea; }
+  .summary .advice { background:#e3f2fd; }
+  .moment { display: grid; grid-template-columns: 340px 1fr; gap: 20px; align-items: start;
+            border: 1px solid var(--line); background:#fff; border-radius: 8px; padding: 16px; margin: 14px 0; }
+  .moment .board svg { width: 100%; height: auto; }
+  .tag { display:inline-block; font-size:11px; padding:2px 8px; border-radius: 10px; margin-right:6px; }
+  .tag.blunder { background:#fdecea; color: var(--red); }
+  .tag.mistake { background:#fff3e0; color:#e65100; }
+  .tag.phase { background:#eef2f7; color:#37474f; }
+  .played { color: var(--red); font-weight: 700; }
+  .best { color: var(--green); font-weight: 700; }
+  .lbl { font-weight: 700; color:#37474f; }
+  h2.persp { margin-top:40px; background:#1a1a1a; color:#fff; padding:8px 14px; border:0; border-radius:6px; }
+  h3 { font-size:16px; margin:22px 0 10px; }
+  a { color:#1565c0; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  @media (max-width: 680px) { .cards, .moment, .summary .sgrid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>{{ v.white }} &nbsp;vs&nbsp; {{ v.black }}</h1>
+  <div class="meta">
+    {% if v.event %}{{ v.event }} · {% endif %}
+    {% if v.date %}{{ v.date }} · {% endif %}
+    结果 {{ v.result }}
+    {% if v.eco or v.opening_name %} · {{ v.eco }} {{ v.opening_name }}{% endif %}
+    {% if v.focus %} · 关注方：{{ v.focus }}{% endif %}
+  </div>
+
+  {% if v.deviation %}
+    <div class="callout">
+      <strong>开局脱谱</strong>：第 {{ v.deviation.move_number }} 回合
+      （{{ v.deviation.side }}）走了 <span class="played">{{ v.deviation.played }}</span>
+      {% if v.deviation.book %} — 理论主线是 <span class="best">{{ v.deviation.book }}</span>{% endif %}。
+    </div>
+  {% else %}
+    <div class="callout">开局全程在已知理论之内。</div>
+  {% endif %}
+
+  {% macro summary_block(sm) %}
+  <div class="summary">
+    <div class="headline">{{ sm.headline }}</div>
+    <div class="sub">总结对象：{{ sm.focus_name }}（{{ sm.side }} · {{ sm.result_text }} · ACPL {{ sm.acpl }}）</div>
+    <div class="sgrid">
+      <div class="sbox good"><h4>做得好的</h4><ul>
+        {% for item in sm.good %}<li>{{ item }}</li>{% endfor %}
+      </ul></div>
+      <div class="sbox bad"><h4>做得不好的</h4><ul>
+        {% for item in sm.bad %}<li>{{ item }}</li>{% endfor %}
+      </ul></div>
+      <div class="sbox advice"><h4>训练建议</h4><ul>
+        {% for item in sm.advice %}<li>{{ item }}</li>{% endfor %}
+      </ul></div>
+    </div>
+  </div>
+  {% endmacro %}
+
+  {% macro turning_block(t) %}
+  <div class="callout">
+    第 {{ t.move_number }} 回合（{{ t.side }}）
+    <span class="played">{{ t.played }}</span>：
+    评估 {{ t.eval_before }} → {{ t.eval_after }}
+    （{{ t['for'] }}此后再没回来）；应走
+    <span class="best">{{ t.best }}</span>。
+    <a href="{{ t.lichess }}">打开分析</a>
+  </div>
+  {% endmacro %}
+
+  {% macro moments_block(moments) %}
+  {% if not moments %}<p class="stat">没有超过阈值的问题着法。</p>{% endif %}
+  {% for m in moments %}
+  <div class="moment">
+    <div class="board">{{ m.svg | safe }}</div>
+    <div>
+      <div>
+        <span class="tag {{ m.classification }}">{{ m.class_zh }}</span>
+        <span class="tag phase">{{ m.phase }}</span>
+        <strong>第 {{ m.move_number }} 回合 · {{ m.side }}</strong>
+      </div>
+      <p>实走 <span class="played">{{ m.played }}</span>，
+         应走 <span class="best">{{ m.best }}</span>
+         （<strong>-{{ m.cp_loss }}cp</strong>；{{ m.eval_before }} → {{ m.eval_after }}）。</p>
+      <p><span class="lbl">为什么错：</span>{{ m.explain.why }}</p>
+      <p><span class="lbl">造成的后果：</span>{{ m.explain.consequence }}</p>
+      <p><span class="lbl">应该怎么做：</span>{{ m.explain.what_to_do }}</p>
+      <p><a href="{{ m.lichess }}">在 lichess 上打开这个局面 →</a></p>
+    </div>
+  </div>
+  {% endfor %}
+  {% endmacro %}
+
+  <div class="cards">
+    {% for side in [v.white_summary, v.black_summary] %}
+    <div class="card">
+      <h3>{{ side.name }}</h3>
+      <div><span class="big">{{ side.acpl }}</span> <span class="stat">平均每步损失(cp)</span></div>
+      <div class="stat">漏着 {{ side.blunders }} · 错着 {{ side.mistakes }} · 不精确 {{ side.inaccuracies }}</div>
+      <table style="margin-top:10px">
+        <tr><th>阶段</th><th>ACPL</th><th>漏着</th><th>错着</th></tr>
+        {% for ph in phases %}
+        <tr><td>{{ phase_zh[ph] }}</td><td>{{ side.phases[ph].acpl }}</td>
+            <td>{{ side.phases[ph].blunders }}</td><td>{{ side.phases[ph].mistakes }}</td></tr>
+        {% endfor %}
+      </table>
+      {% if side.biggest %}
+      <div class="stat" style="margin-top:8px">最大失误：第 {{ side.biggest.move_number }} 回合
+        <span class="played">{{ side.biggest.played }}</span>（应走
+        <span class="best">{{ side.biggest.best }}</span>，-{{ side.biggest.cp_loss }}cp）
+        · <a href="{{ side.biggest.lichess }}">打开分析</a></div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if v.dual and v.perspectives %}
+    {% for p in v.perspectives %}
+    <h2 class="persp">【{{ p.side }}视角】{{ p.name }}</h2>
+    {{ summary_block(p.summary_zh) }}
+    {% if p.turning_point %}<h3>转折点</h3>{{ turning_block(p.turning_point) }}{% endif %}
+    <h3>关键时刻逐步解释</h3>
+    {{ moments_block(p.critical_moments) }}
+    {% endfor %}
+  {% else %}
+    {% if v.summary_zh %}{{ summary_block(v.summary_zh) }}{% endif %}
+    {% if v.turning_point %}<h2>转折点</h2>{{ turning_block(v.turning_point) }}{% endif %}
+    <h2>关键时刻逐步解释</h2>
+    {{ moments_block(v.critical_moments) }}
+  {% endif %}
+
+  <p class="stat" style="margin-top:40px">绿箭 = 引擎最佳着法 · 红箭 = 实走。由 chess-review 生成。</p>
+</div>
+</body>
+</html>

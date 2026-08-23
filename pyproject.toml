@@ -1,0 +1,24 @@
+[project]
+name = "chess-review"
+version = "0.1.0"
+description = "Coach-facing chess game review agent: single-game reviews and player tracking reports powered by Stockfish."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "python-chess>=1.999",
+    "jinja2>=3.1",
+    "flask>=3.0",
+]
+
+[project.scripts]
+chess-review = "chess_review.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+chess_review = ["templates/*.j2", "data/*.tsv", "web/*.html"]
