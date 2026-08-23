@@ -14,6 +14,8 @@ data is used to enrich the opening breakdown of a game review.
 from __future__ import annotations
 
 import json
+import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -69,6 +71,7 @@ class OpeningExplorer:
         self.enabled = enabled
         self._cache: dict[str, Optional[ExplorerData]] = {}
         self.available: Optional[bool] = None  # None until first successful/failed call
+        self.last_error: Optional[str] = None
 
     def lookup(self, fen: str, moves: int = 4, top_games: int = 3) -> Optional[ExplorerData]:
         if not self.enabled:
@@ -82,6 +85,10 @@ class OpeningExplorer:
 
     # ---- internals ---------------------------------------------------------
     def _fetch(self, fen: str, moves: int, top_games: int) -> Optional[dict]:
+        # Once the endpoint has refused us (e.g. HTTP 401/403 IP block, or a
+        # network error) stop hammering it for the rest of the run.
+        if self.available is False:
+            return None
         params = urllib.parse.urlencode({"fen": fen, "moves": moves, "topGames": top_games})
         req = urllib.request.Request(f"{_MASTERS_URL}?{params}", headers={"User-Agent": _UA})
         try:
@@ -89,8 +96,23 @@ class OpeningExplorer:
                 data = json.load(resp)
             self.available = True
             return data
-        except Exception:
+        except urllib.error.HTTPError as e:
             self.available = False
+            if e.code in (401, 403):
+                self.last_error = (
+                    f"HTTP {e.code}: lichess 拒绝了本机对开局库(explorer.lichess.ovh)的请求"
+                    "（该 IP 被限流/封禁）。请更换网络或关闭 VPN 后重试。"
+                )
+            elif e.code == 429:
+                self.last_error = "HTTP 429: 请求过于频繁，被 lichess 限流，请稍后再试。"
+            else:
+                self.last_error = f"HTTP {e.code}: {e.reason}"
+            sys.stderr.write(f"[explorer] {self.last_error}\n")
+            return None
+        except Exception as e:  # noqa: BLE001
+            self.available = False
+            self.last_error = f"{type(e).__name__}: {e}"
+            sys.stderr.write(f"[explorer] 无法访问大师开局库：{self.last_error}\n")
             return None
 
     @staticmethod

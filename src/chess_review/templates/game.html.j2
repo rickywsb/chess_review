@@ -147,9 +147,9 @@
         <li><b>脱谱点：</b>全程跟随理论主线，没有脱谱。</li>
       {% endif %}
       {% if sec.book_choices %}
-        <li><b>{{ '大师库' if sec.book_source == 'masters' else '本地开局库' }}推荐着法：</b>
+        <li><b>{% if sec.book_source == 'masters' %}大师库推荐着法{% elif sec.book_source == 'engine' %}引擎推荐着法（大师库不可用时的替代）{% else %}本地开局库推荐着法{% endif %}：</b>
         {% for bc in sec.book_choices %}
-          {{ '首选' if loop.index0 == 0 else '次选' }} <span class="best">{{ bc.san }}</span>{% if bc.games is not none %}（{{ bc.pct }}% 采用{% if bc.avg_rating %}，平均等级分 {{ bc.avg_rating }}{% endif %}）{% endif %}{% if not loop.last %}；{% endif %}
+          {{ '首选' if loop.index0 == 0 else '次选' }} <span class="best">{{ bc.san }}</span>{% if bc.games is not none %}（{{ bc.pct }}% 采用{% if bc.avg_rating %}，平均等级分 {{ bc.avg_rating }}{% endif %}）{% elif bc.line %}（后续：<span class="mono">{{ bc.line }}</span>）{% endif %}{% if not loop.last %}；{% endif %}
         {% endfor %}</li>
       {% endif %}
       {% if sec.reference %}
@@ -157,8 +157,8 @@
           vs {{ sec.reference.black }}({{ sec.reference.black_rating }}){% if sec.reference.year %}，{{ sec.reference.year }}{% endif %}，{{ sec.reference.winner_zh }}
           {% if sec.reference.url %} — <a href="{{ sec.reference.url }}">棋谱 ↗</a>{% endif %}</li>
       {% endif %}
-      {% if not sec.available and sec.book_source != 'local' %}
-        <li class="stat">大师开局库暂不可用（本次离线）；联网后此处会显示采用率与高手对局。</li>
+      {% if not sec.available %}
+        <li class="stat">大师开局库暂不可用（本次离线或被限流）；联网后此处会显示采用率与 2500+ 高手对局。</li>
       {% endif %}
     </ul>
   </div>

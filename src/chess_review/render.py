@@ -285,6 +285,22 @@ def build_opening_section(ga: GameAnalysis, explorer=None) -> dict:
             played_in_masters = any(em.san == dev_move.san for em in data.moves)
         else:
             played_in_masters = True
+    elif dev_move is not None and dev_move.best_move_san:
+        # Masters explorer unreachable: the local opening dataset has no
+        # popularity data (its "book move" is only the alphabetically-first
+        # known continuation), so recommend the engine's best move + line at the
+        # position instead — that is genuinely accurate.
+        book_source = "engine"
+        book_choices.append({
+            "san": dev_move.best_move_san, "games": None, "pct": None,
+            "avg_rating": None, "white_pct": None,
+            "line": " ".join(dev_move.best_line_san) if dev_move.best_line_san else "",
+        })
+        if ga.deviation_book_san and ga.deviation_book_san != dev_move.best_move_san:
+            book_choices.append({
+                "san": ga.deviation_book_san, "games": None, "pct": None,
+                "avg_rating": None, "white_pct": None, "line": "",
+            })
     elif ga.deviation_book_san:
         book_source = "local"
         book_choices.append({"san": ga.deviation_book_san, "games": None,
@@ -458,18 +474,21 @@ def _md_opening(L: list, sec: dict) -> None:
                     extra += f"，平均等级分 {bc['avg_rating']}"
                 extra += "）"
                 parts.append(f"{lbl} `{bc['san']}`{extra}")
+            elif bc.get("line"):
+                parts.append(f"{lbl} `{bc['san']}`（后续：{bc['line']}）")
             else:
                 parts.append(f"{lbl} `{bc['san']}`")
-        src = "大师库" if sec.get("book_source") == "masters" else "本地开局库"
-        L.append(f"- **{src}推荐着法：** " + "；".join(parts) + "。")
+        src_map = {"masters": "大师库推荐着法", "engine": "引擎推荐着法（大师库不可用时的替代）"}
+        src = src_map.get(sec.get("book_source"), "本地开局库推荐着法")
+        L.append(f"- **{src}：** " + "；".join(parts) + "。")
     if sec.get("reference"):
         r = sec["reference"]
         yr = f"，{r['year']}" if r.get("year") else ""
         link = f" — [棋谱]({r['url']})" if r.get("url") else ""
         L.append(f"- **高手参考对局：** {r['white']}({r['white_rating']}) vs "
                  f"{r['black']}({r['black_rating']}){yr}，{r['winner_zh']}{link}")
-    if not sec.get("available") and sec.get("book_source") != "local":
-        L.append("- _大师开局库暂不可用（本次离线），联网后此处会显示采用率与高手对局。_")
+    if not sec.get("available"):
+        L.append("- _大师开局库暂不可用（本次离线或被限流），联网后此处会显示采用率与 2500+ 高手对局。_")
     L.append("")
 
 
