@@ -11,6 +11,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from .classify import BLUNDER, MISTAKE
 from .metrics import PHASES
 from .models import GameAnalysis, MoveAnalysis
+from .polyglot_book import get_default_book
 from .summary import build_summary_zh
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
@@ -285,26 +286,38 @@ def build_opening_section(ga: GameAnalysis, explorer=None) -> dict:
             played_in_masters = any(em.san == dev_move.san for em in data.moves)
         else:
             played_in_masters = True
-    elif dev_move is not None and dev_move.best_move_san:
-        # Masters explorer unreachable: the local opening dataset has no
-        # popularity data (its "book move" is only the alphabetically-first
-        # known continuation), so recommend the engine's best move + line at the
-        # position instead — that is genuinely accurate.
-        book_source = "engine"
-        book_choices.append({
-            "san": dev_move.best_move_san, "games": None, "pct": None,
-            "avg_rating": None, "white_pct": None,
-            "line": " ".join(dev_move.best_line_san) if dev_move.best_line_san else "",
-        })
-        if ga.deviation_book_san and ga.deviation_book_san != dev_move.best_move_san:
+    else:
+        # Masters explorer unreachable/blocked. Fall back, in order, to an
+        # offline popularity-weighted Polyglot book, then the engine's best
+        # move, then the (unranked) local opening dataset.
+        pg = get_default_book().lookup(query_fen, top=2) if query_fen else []
+        if pg:
+            book_source = "polyglot"
+            for mv in pg:
+                book_choices.append({
+                    "san": mv["san"], "games": None, "pct": mv["pct"],
+                    "avg_rating": None, "white_pct": None,
+                    "weight": mv["weight"], "line": "",
+                })
+        elif dev_move is not None and dev_move.best_move_san:
+            # The local opening dataset has no popularity data (its "book move"
+            # is only the alphabetically-first known continuation), so recommend
+            # the engine's best move + line at the position instead.
+            book_source = "engine"
             book_choices.append({
-                "san": ga.deviation_book_san, "games": None, "pct": None,
-                "avg_rating": None, "white_pct": None, "line": "",
+                "san": dev_move.best_move_san, "games": None, "pct": None,
+                "avg_rating": None, "white_pct": None,
+                "line": " ".join(dev_move.best_line_san) if dev_move.best_line_san else "",
             })
-    elif ga.deviation_book_san:
-        book_source = "local"
-        book_choices.append({"san": ga.deviation_book_san, "games": None,
-                             "pct": None, "avg_rating": None, "white_pct": None})
+            if ga.deviation_book_san and ga.deviation_book_san != dev_move.best_move_san:
+                book_choices.append({
+                    "san": ga.deviation_book_san, "games": None, "pct": None,
+                    "avg_rating": None, "white_pct": None, "line": "",
+                })
+        elif ga.deviation_book_san:
+            book_source = "local"
+            book_choices.append({"san": ga.deviation_book_san, "games": None,
+                                 "pct": None, "avg_rating": None, "white_pct": None})
 
     deviation = None
     if dev_move is not None:
@@ -465,21 +478,28 @@ def _md_opening(L: list, sec: dict) -> None:
         L.append("- **脱谱点：** 全程跟随理论主线，没有脱谱。")
     if sec.get("book_choices"):
         labels = ["首选", "次选"]
+        src_key = sec.get("book_source")
         parts = []
         for i, bc in enumerate(sec["book_choices"]):
             lbl = labels[i] if i < len(labels) else f"选择{i + 1}"
-            if bc.get("games") is not None:
+            if src_key == "masters" and bc.get("games") is not None:
                 extra = f"（{bc['pct']}% 采用"
                 if bc.get("avg_rating"):
                     extra += f"，平均等级分 {bc['avg_rating']}"
                 extra += "）"
                 parts.append(f"{lbl} `{bc['san']}`{extra}")
+            elif src_key == "polyglot" and bc.get("pct") is not None:
+                parts.append(f"{lbl} `{bc['san']}`（{bc['pct']}% 权重）")
             elif bc.get("line"):
                 parts.append(f"{lbl} `{bc['san']}`（后续：{bc['line']}）")
             else:
                 parts.append(f"{lbl} `{bc['san']}`")
-        src_map = {"masters": "大师库推荐着法", "engine": "引擎推荐着法（大师库不可用时的替代）"}
-        src = src_map.get(sec.get("book_source"), "本地开局库推荐着法")
+        src_map = {
+            "masters": "大师库推荐着法",
+            "polyglot": "开局库(Polyglot)推荐着法",
+            "engine": "引擎推荐着法（大师库不可用时的替代）",
+        }
+        src = src_map.get(src_key, "本地开局库推荐着法")
         L.append(f"- **{src}：** " + "；".join(parts) + "。")
     if sec.get("reference"):
         r = sec["reference"]

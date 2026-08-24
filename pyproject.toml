@@ -21,4 +21,4 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-chess_review = ["templates/*.j2", "data/*.tsv", "web/*.html"]
+chess_review = ["templates/*.j2", "data/*.tsv", "data/*.bin", "web/*.html"]

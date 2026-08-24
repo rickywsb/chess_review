@@ -68,3 +68,15 @@ def test_pgn_reads():
     game = chess.pgn.read_game(io.StringIO(pgn))
     assert game is not None
     assert len(list(game.mainline_moves())) == 7
+
+
+def test_polyglot_book_lookup():
+    from chess_review.polyglot_book import PolyglotBook
+    book = PolyglotBook()
+    assert book.available  # bundled data/performance.bin
+    moves = book.lookup(chess.STARTING_FEN, top=3)
+    assert moves, "start position should be in book"
+    assert all({"san", "weight", "pct"} <= set(m) for m in moves)
+    assert moves[0]["san"] in {"e4", "d4", "c4", "Nf3", "g3", "b3"}
+    # An out-of-book / bogus position yields no moves, never raises.
+    assert book.lookup("8/8/8/8/8/8/8/K6k w - - 0 1") == []
