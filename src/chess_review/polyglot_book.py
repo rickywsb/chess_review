@@ -51,6 +51,7 @@ class PolyglotBook:
         for e in entries[:top]:
             out.append({
                 "san": board.san(e.move),
+                "uci": e.move.uci(),
                 "weight": e.weight,
                 "pct": round(e.weight / total * 100, 1),
             })

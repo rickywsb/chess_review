@@ -209,9 +209,6 @@ def _side_summary(ga: GameAnalysis, color: bool) -> dict:
     }
 
 
-WINNER_ZH = {"white": "白胜", "black": "黑胜", "": "和棋", "draw": "和棋"}
-
-
 def _san_line(moves: list, plies: int = 10) -> str:
     """Render the first `plies` half-moves as '1. e4 e5 2. Nf3 ...'."""
     out: list[str] = []
@@ -225,26 +222,46 @@ def _san_line(moves: list, plies: int = 10) -> str:
     return " ".join(out)
 
 
-def _game_url(game_id: str) -> str:
-    return f"https://lichess.org/{game_id}" if game_id else ""
+def _book_line_from(start_fen: str, first_uci: str, plies: int = 10) -> tuple[str, str]:
+    """Follow the opening book from ``start_fen``, playing ``first_uci`` then the
+    single most popular book move for up to ``plies`` half-moves. Returns the
+    rendered SAN line ("3... d5 4. exd5 ...") and the FEN of the final position.
+    """
+    book = get_default_book()
+    board = chess.Board(start_fen)
+    sans: list[str] = []
+    uci: Optional[str] = first_uci
+    for _ in range(plies):
+        if not uci:
+            break
+        try:
+            mv = chess.Move.from_uci(uci)
+        except ValueError:
+            break
+        if mv not in board.legal_moves:
+            break
+        if board.turn == chess.WHITE:
+            sans.append(f"{board.fullmove_number}. {board.san(mv)}")
+        elif not sans:
+            sans.append(f"{board.fullmove_number}... {board.san(mv)}")
+        else:
+            sans.append(board.san(mv))
+        board.push(mv)
+        nxt = book.lookup(board.fen(), top=1)
+        uci = nxt[0]["uci"] if nxt else None
+    return " ".join(sans), board.fen()
 
 
-def build_opening_section(ga: GameAnalysis, explorer=None) -> dict:
+def build_opening_section(ga: GameAnalysis) -> dict:
     """Assemble the opening breakdown: ECO, the played line, the first
-    out-of-book move, the top book choices and a master reference game (lichess
-    masters explorer when reachable; the local opening book as a fallback)."""
+    out-of-book move, and the opening book's top-two continuations (each
+    followed ~5 moves) with a lichess analysis link."""
     moves = ga.moves
     line_played = _san_line(moves, plies=10)
 
     dev_move = None
     if ga.deviation_ply is not None:
         dev_move = next((m for m in moves if m.ply == ga.deviation_ply), None)
-
-    eco = ga.eco
-    name = ga.opening_name
-    book_choices: list[dict] = []
-    book_source = None
-    reference = None
 
     # Query the position *before* the first out-of-book move; if the game never
     # left theory, query the last opening-phase position.
@@ -258,66 +275,17 @@ def build_opening_section(ga: GameAnalysis, explorer=None) -> dict:
         elif moves:
             query_fen = moves[min(len(moves) - 1, 9)].fen_after
 
-    data = explorer.lookup(query_fen) if (explorer is not None and query_fen) else None
-    played_in_masters = False
-    if data is not None:
-        book_source = "masters"
-        if data.eco:
-            eco = data.eco
-        if data.name:
-            name = data.name
-        for em in data.moves[:2]:
-            book_choices.append({
-                "san": em.san,
-                "games": em.games,
-                "pct": round(em.games / data.total_games * 100, 1) if data.total_games else None,
-                "avg_rating": em.avg_rating or None,
-                "white_pct": round(em.white_score_pct()) if em.games else None,
-            })
-        if data.top_games:
-            g = data.top_games[0]
-            reference = {
-                "white": g.white_name, "white_rating": g.white_rating,
-                "black": g.black_name, "black_rating": g.black_rating,
-                "winner_zh": WINNER_ZH.get(g.winner, "和棋"),
-                "year": g.year, "url": _game_url(g.game_id),
-            }
-        if dev_move is not None:
-            played_in_masters = any(em.san == dev_move.san for em in data.moves)
-        else:
-            played_in_masters = True
-    else:
-        # Masters explorer unreachable/blocked. Fall back, in order, to an
-        # offline popularity-weighted Polyglot book, then the engine's best
-        # move, then the (unranked) local opening dataset.
-        pg = get_default_book().lookup(query_fen, top=2) if query_fen else []
-        if pg:
-            book_source = "polyglot"
-            for mv in pg:
-                book_choices.append({
-                    "san": mv["san"], "games": None, "pct": mv["pct"],
-                    "avg_rating": None, "white_pct": None,
-                    "weight": mv["weight"], "line": "",
-                })
-        elif dev_move is not None and dev_move.best_move_san:
-            # The local opening dataset has no popularity data (its "book move"
-            # is only the alphabetically-first known continuation), so recommend
-            # the engine's best move + line at the position instead.
-            book_source = "engine"
-            book_choices.append({
-                "san": dev_move.best_move_san, "games": None, "pct": None,
-                "avg_rating": None, "white_pct": None,
-                "line": " ".join(dev_move.best_line_san) if dev_move.best_line_san else "",
-            })
-            if ga.deviation_book_san and ga.deviation_book_san != dev_move.best_move_san:
-                book_choices.append({
-                    "san": ga.deviation_book_san, "games": None, "pct": None,
-                    "avg_rating": None, "white_pct": None, "line": "",
-                })
-        elif ga.deviation_book_san:
-            book_source = "local"
-            book_choices.append({"san": ga.deviation_book_san, "games": None,
-                                 "pct": None, "avg_rating": None, "white_pct": None})
+    # Top-2 book choices at that position, each extended into a short line.
+    book_choices: list[dict] = []
+    pg = get_default_book().lookup(query_fen, top=2) if query_fen else []
+    for mv in pg:
+        line, end_fen = _book_line_from(query_fen, mv["uci"], plies=10)
+        book_choices.append({
+            "san": mv["san"],
+            "pct": mv["pct"],
+            "line": line,
+            "lichess": lichess_url(end_fen),
+        })
 
     deviation = None
     if dev_move is not None:
@@ -326,20 +294,17 @@ def build_opening_section(ga: GameAnalysis, explorer=None) -> dict:
             "side": "白方" if dev_move.color == chess.WHITE else "黑方",
             "played": dev_move.san,
             "cp_loss": dev_move.cp_loss,
-            "in_masters": played_in_masters,
             "lichess": lichess_url(dev_move.fen_before),
         }
 
     return {
-        "eco": eco or "",
-        "name": name or "",
+        "eco": ga.eco or "",
+        "name": ga.opening_name or "",
         "line_played": line_played,
         "deviation": deviation,
         "in_book_full": ga.deviation_ply is None and bool(ga.opening_name),
         "book_choices": book_choices,
-        "book_source": book_source,
-        "reference": reference,
-        "available": data is not None,
+        "book_available": bool(book_choices),
     }
 
 
@@ -385,7 +350,7 @@ def _perspective_block(ga: GameAnalysis, color: bool, threshold: int,
 
 def build_game_view(ga: GameAnalysis, player: Optional[str] = None,
                     threshold: int = MISTAKE, with_svg: bool = True,
-                    dual: bool = False, explorer=None) -> dict:
+                    dual: bool = False) -> dict:
     focus_color = ga.player_color(player) if player else None
 
     losers = []
@@ -427,7 +392,7 @@ def build_game_view(ga: GameAnalysis, player: Optional[str] = None,
         "white_summary": _side_summary(ga, chess.WHITE),
         "black_summary": _side_summary(ga, chess.BLACK),
         "turning_point": turning,
-        "opening_section": build_opening_section(ga, explorer),
+        "opening_section": build_opening_section(ga),
         "critical_moments": _critical_moments(ga, focus_color, threshold, with_svg),
         "n_moves": len(ga.moves),
     }
@@ -471,52 +436,29 @@ def _md_opening(L: list, sec: dict) -> None:
         L.append(f"- **实战着法：** {sec['line_played']}")
     if sec.get("deviation"):
         d = sec["deviation"]
-        tail = "（该着仍在大师库内，只是较少见）" if d["in_masters"] else ""
         L.append(f"- **首个脱谱点：** 第 {d['move_number']} 回合 {d['side']} 走了 "
-                 f"`{d['played']}`{tail}。")
+                 f"`{d['played']}`。")
     elif sec.get("in_book_full"):
         L.append("- **脱谱点：** 全程跟随理论主线，没有脱谱。")
     if sec.get("book_choices"):
+        L.append("- **开局库续法（前两个选择，各续约 5 回合）：**")
         labels = ["首选", "次选"]
-        src_key = sec.get("book_source")
-        parts = []
         for i, bc in enumerate(sec["book_choices"]):
             lbl = labels[i] if i < len(labels) else f"选择{i + 1}"
-            if src_key == "masters" and bc.get("games") is not None:
-                extra = f"（{bc['pct']}% 采用"
-                if bc.get("avg_rating"):
-                    extra += f"，平均等级分 {bc['avg_rating']}"
-                extra += "）"
-                parts.append(f"{lbl} `{bc['san']}`{extra}")
-            elif src_key == "polyglot" and bc.get("pct") is not None:
-                parts.append(f"{lbl} `{bc['san']}`（{bc['pct']}% 权重）")
-            elif bc.get("line"):
-                parts.append(f"{lbl} `{bc['san']}`（后续：{bc['line']}）")
-            else:
-                parts.append(f"{lbl} `{bc['san']}`")
-        src_map = {
-            "masters": "大师库推荐着法",
-            "polyglot": "开局库(Polyglot)推荐着法",
-            "engine": "引擎推荐着法（大师库不可用时的替代）",
-        }
-        src = src_map.get(src_key, "本地开局库推荐着法")
-        L.append(f"- **{src}：** " + "；".join(parts) + "。")
-    if sec.get("reference"):
-        r = sec["reference"]
-        yr = f"，{r['year']}" if r.get("year") else ""
-        link = f" — [棋谱]({r['url']})" if r.get("url") else ""
-        L.append(f"- **高手参考对局：** {r['white']}({r['white_rating']}) vs "
-                 f"{r['black']}({r['black_rating']}){yr}，{r['winner_zh']}{link}")
-    if not sec.get("available"):
-        L.append("- _大师开局库暂不可用（本次离线或被限流），联网后此处会显示采用率与 2500+ 高手对局。_")
+            pct = f"（{bc['pct']}% 权重）" if bc.get("pct") is not None else ""
+            line = f"{bc['line']}" if bc.get("line") else f"`{bc['san']}`"
+            link = f" · [在 lichess 上打开]({bc['lichess']})" if bc.get("lichess") else ""
+            L.append(f"  - {lbl} `{bc['san']}`{pct}：{line}{link}")
     L.append("")
 
 
 def _md_phase(L: list, title: str, phase_zh: str, moments: list) -> None:
+    if not moments:
+        return  # hide phase sections with nothing above threshold
     L.append(f"## {title}")
     L.append(_phase_summary_zh(phase_zh, moments))
     L.append("")
-    _md_critical(L, moments, empty_msg=f"{phase_zh}走得比较稳，没有需要专门讲解的着法。")
+    _md_critical(L, moments)
 
 
 def _md_turning(L: list, t: dict) -> None:
@@ -575,9 +517,10 @@ def render_game_markdown(view: dict) -> str:
     L.append("## 二、开局板块")
     _md_opening(L, view["opening_section"])
     open_moments = _phase_moments(view["critical_moments"], "opening")
-    L.append("**开局阶段问题着法：**")
-    L.append("")
-    _md_critical(L, open_moments, empty_msg="开局阶段走得干净，没有明显失误。")
+    if open_moments:
+        L.append("**开局阶段问题着法：**")
+        L.append("")
+        _md_critical(L, open_moments)
 
     if view.get("dual") and view.get("perspectives"):
         # per-side middlegame / endgame breakdowns

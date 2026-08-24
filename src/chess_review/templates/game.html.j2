@@ -142,23 +142,20 @@
       {% if sec.line_played %}<li><b>实战着法：</b><span class="mono">{{ sec.line_played }}</span></li>{% endif %}
       {% if sec.deviation %}
         <li><b>首个脱谱点：</b>第 {{ sec.deviation.move_number }} 回合 {{ sec.deviation.side }} 走了
-          <span class="played">{{ sec.deviation.played }}</span>{% if sec.deviation.in_masters %}（该着仍在大师库内，只是较少见）{% endif %}。</li>
+          <span class="played">{{ sec.deviation.played }}</span>。</li>
       {% elif sec.in_book_full %}
         <li><b>脱谱点：</b>全程跟随理论主线，没有脱谱。</li>
       {% endif %}
       {% if sec.book_choices %}
-        <li><b>{% if sec.book_source == 'masters' %}大师库推荐着法{% elif sec.book_source == 'polyglot' %}开局库(Polyglot)推荐着法{% elif sec.book_source == 'engine' %}引擎推荐着法（大师库不可用时的替代）{% else %}本地开局库推荐着法{% endif %}：</b>
-        {% for bc in sec.book_choices %}
-          {{ '首选' if loop.index0 == 0 else '次选' }} <span class="best">{{ bc.san }}</span>{% if sec.book_source == 'masters' and bc.games is not none %}（{{ bc.pct }}% 采用{% if bc.avg_rating %}，平均等级分 {{ bc.avg_rating }}{% endif %}）{% elif sec.book_source == 'polyglot' and bc.pct is not none %}（{{ bc.pct }}% 权重）{% elif bc.line %}（后续：<span class="mono">{{ bc.line }}</span>）{% endif %}{% if not loop.last %}；{% endif %}
-        {% endfor %}</li>
-      {% endif %}
-      {% if sec.reference %}
-        <li><b>高手参考对局：</b>{{ sec.reference.white }}({{ sec.reference.white_rating }})
-          vs {{ sec.reference.black }}({{ sec.reference.black_rating }}){% if sec.reference.year %}，{{ sec.reference.year }}{% endif %}，{{ sec.reference.winner_zh }}
-          {% if sec.reference.url %} — <a href="{{ sec.reference.url }}">棋谱 ↗</a>{% endif %}</li>
-      {% endif %}
-      {% if not sec.available %}
-        <li class="stat">大师开局库暂不可用（本次离线或被限流）；联网后此处会显示采用率与 2500+ 高手对局。</li>
+        <li><b>开局库续法（前两个选择，各续约 5 回合）：</b>
+          <ul>
+          {% for bc in sec.book_choices %}
+            <li>{{ '首选' if loop.index0 == 0 else '次选' }} <span class="best">{{ bc.san }}</span>{% if bc.pct is not none %}（{{ bc.pct }}% 权重）{% endif %}：
+              <span class="mono">{{ bc.line or bc.san }}</span>
+              {% if bc.lichess %} · <a href="{{ bc.lichess }}">在 lichess 上打开 ↗</a>{% endif %}</li>
+          {% endfor %}
+          </ul>
+        </li>
       {% endif %}
     </ul>
   </div>
@@ -189,30 +186,40 @@
   <h2>二、开局板块</h2>
   {{ opening_block(v.opening_section) }}
   {% set open_m = v.critical_moments | selectattr('phase_key','equalto','opening') | list %}
+  {% if open_m %}
   <h3>开局阶段问题着法</h3>
-  {{ moments_block(open_m, '开局阶段走得干净，没有明显失误。') }}
+  {{ moments_block(open_m, '') }}
+  {% endif %}
 
   {% if v.dual and v.perspectives %}
     {% for p in v.perspectives %}
     <h2 class="persp">【{{ p.side }}视角】{{ p.name }}</h2>
     {% set mid_m = p.critical_moments | selectattr('phase_key','equalto','middlegame') | list %}
     {% set end_m = p.critical_moments | selectattr('phase_key','equalto','endgame') | list %}
+    {% if mid_m %}
     <h3>中局板块</h3>
     {{ phase_summary('中局', mid_m) }}
-    {{ moments_block(mid_m, '中局走得比较稳，没有需要专门讲解的着法。') }}
+    {{ moments_block(mid_m, '') }}
+    {% endif %}
+    {% if end_m %}
     <h3>残局板块</h3>
     {{ phase_summary('残局', end_m) }}
-    {{ moments_block(end_m, '残局走得比较稳，没有需要专门讲解的着法。') }}
+    {{ moments_block(end_m, '') }}
+    {% endif %}
     {% endfor %}
   {% else %}
     {% set mid_m = v.critical_moments | selectattr('phase_key','equalto','middlegame') | list %}
     {% set end_m = v.critical_moments | selectattr('phase_key','equalto','endgame') | list %}
+    {% if mid_m %}
     <h2>三、中局板块</h2>
     {{ phase_summary('中局', mid_m) }}
-    {{ moments_block(mid_m, '中局走得比较稳，没有需要专门讲解的着法。') }}
+    {{ moments_block(mid_m, '') }}
+    {% endif %}
+    {% if end_m %}
     <h2>四、残局板块</h2>
     {{ phase_summary('残局', end_m) }}
-    {{ moments_block(end_m, '残局走得比较稳，没有需要专门讲解的着法。') }}
+    {{ moments_block(end_m, '') }}
+    {% endif %}
   {% endif %}
 
   <p class="stat" style="margin-top:40px">绿箭 = 引擎最佳着法 · 红箭 = 实走。由 chess-review 生成。</p>
