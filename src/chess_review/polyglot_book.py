@@ -4,9 +4,9 @@ Reads a standard Polyglot ``.bin`` book (popularity-weighted moves) via
 ``chess.polyglot``. This works fully offline, so it is a reliable fallback when
 the lichess masters explorer is unreachable or the client IP is blocked.
 
-The bundled ``data/performance.bin`` is a modest general-purpose book; point
-``CHESS_REVIEW_BOOK`` (or the ``path`` argument) at a larger ``.bin`` for deeper
-coverage.
+The bundled ``data/komodo.bin`` is a broad ~578k-position book (Komodo opening
+book by Salvo Spitaleri); point ``CHESS_REVIEW_BOOK`` (or the ``path`` argument)
+at another ``.bin`` to use a different book.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import Optional
 import chess
 import chess.polyglot
 
-_DEFAULT_PATH = os.path.join(os.path.dirname(__file__), "data", "performance.bin")
+_DEFAULT_PATH = os.path.join(os.path.dirname(__file__), "data", "komodo.bin")
 
 
 class PolyglotBook:

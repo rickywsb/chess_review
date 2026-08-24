@@ -73,7 +73,7 @@ def test_pgn_reads():
 def test_polyglot_book_lookup():
     from chess_review.polyglot_book import PolyglotBook
     book = PolyglotBook()
-    assert book.available  # bundled data/performance.bin
+    assert book.available  # bundled data/komodo.bin
     moves = book.lookup(chess.STARTING_FEN, top=3)
     assert moves, "start position should be in book"
     assert all({"san", "weight", "pct"} <= set(m) for m in moves)
