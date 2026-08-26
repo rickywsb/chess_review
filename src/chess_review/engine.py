@@ -36,6 +36,17 @@ def default_threads() -> int:
     return max(1, cpu - 1)
 
 
+def _env_int(name: str, default: int) -> int:
+    """Read a non-negative int from the environment, falling back to default."""
+    value = os.environ.get(name)
+    if value:
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    return default
+
+
 def resolve_engine_path(explicit: Optional[str] = None) -> str:
     """Find a Stockfish binary.
 
@@ -76,7 +87,7 @@ class Engine:
         path: Optional[str] = None,
         depth: int = 18,
         threads: Optional[int] = None,
-        hash_mb: int = 512,
+        hash_mb: Optional[int] = None,
         movetime: Optional[int] = None,
     ) -> None:
         self.path = resolve_engine_path(path)
@@ -84,6 +95,13 @@ class Engine:
         # movetime (milliseconds per position) takes precedence over depth.
         self.movetime = movetime
         self._engine = chess.engine.SimpleEngine.popen_uci(self.path)
+        # Infra tuning falls back to env vars so a deployment can size the
+        # engine to its machine without code changes:
+        #   CHESS_ENGINE_THREADS, CHESS_ENGINE_HASH_MB
+        if threads is None:
+            threads = _env_int("CHESS_ENGINE_THREADS", 0)
+        if hash_mb is None:
+            hash_mb = _env_int("CHESS_ENGINE_HASH_MB", 512)
         options = {}
         if "Threads" in self._engine.options:
             options["Threads"] = threads if threads and threads > 0 else default_threads()

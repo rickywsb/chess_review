@@ -32,6 +32,22 @@ from .render import (
 
 _WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value:
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    return default
+
+
+# Server-side search budget. A deployment can raise these for a beefier machine
+# via CHESS_REVIEW_DEPTH / CHESS_REVIEW_MAX_DEPTH without touching the UI.
+_DEFAULT_DEPTH = _env_int("CHESS_REVIEW_DEPTH", 18)
+_MAX_DEPTH = max(_DEFAULT_DEPTH, _env_int("CHESS_REVIEW_MAX_DEPTH", 26))
+
 # Load the opening book once per process (shared, read-only).
 _BOOK: Optional[OpeningBook] = None
 
@@ -80,7 +96,7 @@ def create_app() -> Flask:
 
         mode = request.form.get("mode", "student")
         player = (request.form.get("player") or "").strip() or None
-        depth = _clamp_int(request.form.get("depth"), 14, 6, 24)
+        depth = _clamp_int(request.form.get("depth"), _DEFAULT_DEPTH, 6, _MAX_DEPTH)
         max_games = _clamp_int(request.form.get("max_games"), 20, 1, 200)
 
         if not pgn_text.strip():
