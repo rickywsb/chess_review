@@ -10,6 +10,7 @@ from .classify import classify_loss, classify_phase
 from .engine import Engine
 from .models import GameAnalysis, MoveAnalysis
 from .opening_book import OpeningBook
+from .polyglot_book import get_default_book
 
 
 def _headers(game: chess.pgn.Game) -> dict:
@@ -27,7 +28,12 @@ def analyze_game(
     moves = list(game.mainline_moves())
 
     # Opening theory detection (independent of the engine).
+    #  - ECO/name come from the named-openings dataset (tsv OpeningBook).
+    #  - The "left theory" point comes from the dense, popularity-weighted
+    #    Polyglot book so normal early moves (e.g. 2.Nf3) are not mistaken for
+    #    deviations; only leaving the popular paths counts (usually 6-8+ moves).
     opening = book.detect(moves) if book is not None else None
+    pdev = get_default_book().detect_deviation(moves)
 
     board = game.board()
     result = GameAnalysis(
@@ -41,13 +47,20 @@ def analyze_game(
         opening_name=(opening.name if opening else headers.get("Opening", "")),
         headers=headers,
     )
-    if opening is not None:
+    # Prefer the dense Polyglot book for the deviation point; fall back to the
+    # tsv named-openings book when the Polyglot book is unavailable.
+    if pdev is not None:
+        result.deviation_ply = pdev["deviation_ply"]
+        result.deviation_side = pdev["deviation_side"]
+        result.deviation_move_san = pdev["deviation_move_san"]
+        result.deviation_book_san = pdev["book_move_san"]
+    elif opening is not None:
         result.deviation_ply = opening.deviation_ply
         result.deviation_side = opening.deviation_side
         result.deviation_move_san = opening.deviation_move_san
         result.deviation_book_san = opening.book_move_san
 
-    deviation_ply = opening.deviation_ply if opening else None
+    deviation_ply = result.deviation_ply
     book_loaded = book is not None and book.loaded
 
     # First analysis: the starting position.
@@ -65,7 +78,7 @@ def analyze_game(
         # A move is "in book" if it is played before the first deviation ply
         # (or the game never left theory). Used for both the phase and the field.
         in_book = deviation_ply is not None and ply < deviation_ply
-        if deviation_ply is None and opening is not None:
+        if deviation_ply is None and (opening is not None or pdev is not None):
             in_book = True  # never left theory
         phase = classify_phase(board, in_book=in_book, book_loaded=book_loaded)
 
