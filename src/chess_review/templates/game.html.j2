@@ -147,7 +147,7 @@
         <li><b>脱谱点：</b>全程跟随理论主线，没有脱谱。</li>
       {% endif %}
       {% if sec.book_choices %}
-        <li><b>开局库续法（前两个选择，各续约 5 回合）：</b>
+        <li><b>开局库续法{% if sec.anchor_move_number %}（第 {{ sec.anchor_move_number }} 回合{{ sec.anchor_side }}的选择点）{% endif %}（前两个选择，各续约 5 回合）：</b>
           <ul>
           {% for bc in sec.book_choices %}
             <li>{{ '首选' if loop.index0 == 0 else '次选' }} <span class="best">{{ bc.san }}</span>{% if bc.pct is not none %}（{{ bc.pct }}% 权重）{% endif %}：

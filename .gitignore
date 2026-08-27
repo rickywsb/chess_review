@@ -20,3 +20,10 @@ src/chess_review/data/openings.tsv
 
 .DS_Store
 .pytest_cache/
+
+# Secrets / API keys — never commit
+.env
+*.key
+chatgptapi.txt
+*api*token*
+*secret*

@@ -1,7 +1,12 @@
 """Move classification and phase detection thresholds."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import chess
+
+if TYPE_CHECKING:
+    from .models import MoveAnalysis
 
 # Centipawn-loss thresholds (1 pawn = 100 cp), matching the report definitions:
 #   "漏着" / blunder  : loss >= 200 (>= 2 pawns)
@@ -81,3 +86,72 @@ def classify_phase(board: chess.Board, in_book: bool = True,
 
     # ---- middlegame --------------------------------------------------------
     return "middlegame"
+
+
+# ---------------------------------------------------------------------------
+# significance / selection layer
+# ---------------------------------------------------------------------------
+# Outcome zones from the mover's point of view. A move only deserves a full
+# write-up when it *changes the outcome* — throws away a win, drops from a
+# holdable position into a losing one, or misses a forced mate that also costs
+# the decisive edge. Large centipawn swings that keep the game in the same
+# decisive zone (e.g. +9.45 -> +7.28, both completely winning) are noise.
+WIN_CP = 300     # >= this = decisive advantage (胜势)
+EDGE_CP = 100    # >= this = clear advantage; within ±EDGE_CP = balanced (均势)
+
+# Why a flagged move matters — drives differentiated language downstream and,
+# later, grounds the LLM phrasing pass.
+TAG_ZH = {
+    "missed_mate": "错过强制杀",
+    "threw_game": "把局面走坏了",
+    "lost_win": "让到手的优势溜走",
+    "big_error": "严重失误",
+}
+
+
+def outcome_zone(cp: int, mate: "int | None") -> int:
+    """Bucket an eval (mover POV) into an outcome zone: 2=胜势, 1=优势, 0=均势,
+    -1=劣势, -2=败势. Forced mates collapse to the extreme zones."""
+    if mate is not None:
+        return 2 if mate > 0 else -2
+    if cp >= WIN_CP:
+        return 2
+    if cp >= EDGE_CP:
+        return 1
+    if cp > -EDGE_CP:
+        return 0
+    if cp > -WIN_CP:
+        return -1
+    return -2
+
+
+def significance(m: "MoveAnalysis", threshold: int = MISTAKE) -> "tuple[bool, str]":
+    """Decide whether a move is worth commenting on, and tag *why* it matters.
+
+    Returns ``(keep, tag)``. Selection is based on whether the move changed the
+    *outcome* of the game, not on the raw centipawn loss — a big drop that keeps
+    the game in the same decisive zone is filtered out as noise."""
+    before = outcome_zone(m.eval_before_mover, m.mate_before)
+    after = outcome_zone(m.eval_after_mover, m.mate_after)
+
+    # Threw away a forced mate — but only worth noting if it also cost the
+    # decisive edge. Giving up a mate-in-6 while still up a queen (+6) is not
+    # instructive; the win was never in doubt.
+    if m.mate_before is not None and m.mate_before > 0 and \
+            (m.mate_after is None or m.mate_after <= 0) and after < 2:
+        return True, "missed_mate"
+    # Was at least equal, now worse than equal — fell into real trouble.
+    if before >= 0 and after <= -1:
+        return True, "threw_game"
+    # Had a genuine advantage, now no better than equal — let the win slip.
+    if before >= 1 and after <= 0:
+        return True, "lost_win"
+    # Same broad zone and still crushing / already lost: nitpicking, skip it.
+    if before >= 2 and after >= 2:
+        return False, "still_winning"
+    if before <= -2 and after <= -2:
+        return False, "already_lost"
+    # Otherwise flag only outright blunders that stayed in the same zone.
+    if m.cp_loss >= max(BLUNDER, threshold):
+        return True, "big_error"
+    return False, "minor"

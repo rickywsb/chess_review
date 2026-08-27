@@ -8,7 +8,8 @@ import chess
 import chess.svg
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from .classify import BLUNDER, MISTAKE
+from . import coach_llm
+from .classify import BLUNDER, MISTAKE, TAG_ZH, outcome_zone, significance
 from .metrics import PHASES
 from .models import GameAnalysis, MoveAnalysis
 from .polyglot_book import get_default_book
@@ -35,6 +36,11 @@ def _state_zh(cp: int) -> str:
     if cp > -200:
         return "略差"
     return "劣势"
+
+
+# Selection layer lives in classify.py so the summary shares one source of truth.
+_significance = significance
+_outcome_zone = outcome_zone
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +117,95 @@ def _explain_move_zh(m: MoveAnalysis) -> dict:
     return {"why": why, "consequence": consequence, "what_to_do": what_to_do}
 
 
+def _king_flight_squares(board: chess.Board, king_color: bool) -> int:
+    """Rough count of ``king_color``'s king escape squares: adjacent squares not
+    occupied by a friendly piece and not attacked by the opponent."""
+    ksq = board.king(king_color)
+    if ksq is None:
+        return 0
+    other = not king_color
+    count = 0
+    for sq in chess.SquareSet(chess.BB_KING_ATTACKS[ksq]):
+        piece = board.piece_at(sq)
+        if piece is not None and piece.color == king_color:
+            continue
+        if board.is_attacked_by(other, sq):
+            continue
+        count += 1
+    return count
+
+
+def _move_facts(m: MoveAnalysis) -> list[str]:
+    """Concrete, engine-independent board facts about a flagged move, used to
+    ground the LLM so it names the real idea instead of guessing. Fail-soft."""
+    facts: list[str] = []
+    try:
+        board = chess.Board(m.fen_before)
+    except (ValueError, TypeError):
+        return facts
+    opp = not board.turn  # the side being attacked / defending
+
+    try:
+        best = chess.Move.from_uci(m.best_move_uci)
+    except (ValueError, TypeError):
+        best = None
+    if best is not None and best in board.legal_moves:
+        if m.best_is_check:
+            facts.append(f"最佳着法 {m.best_move_san} 是将军。")
+        elif board.is_capture(best):
+            facts.append(f"最佳着法 {m.best_move_san} 是吃子。")
+        else:
+            facts.append(f"最佳着法 {m.best_move_san} 是安静的调整/预防着法。")
+        flight_before = _king_flight_squares(board, opp)
+        after_best = board.copy(stack=False)
+        after_best.push(best)
+        flight_best = _king_flight_squares(after_best, opp)
+        facts.append(f"走最佳着法前，对方王约有 {flight_before} 个可逃格；"
+                     f"走完只剩约 {flight_best} 个。")
+
+    try:
+        played = chess.Move.from_uci(m.uci)
+        if played in board.legal_moves:
+            after_played = board.copy(stack=False)
+            after_played.push(played)
+            facts.append(f"而实走 {m.san} 之后，对方王约有 "
+                         f"{_king_flight_squares(after_played, opp)} 个可逃格。")
+    except (ValueError, TypeError):
+        pass
+
+    if m.mate_before is not None and m.mate_before > 0:
+        facts.append(f"最佳着法可导向约 {m.mate_before} 步的强制杀。")
+    return facts
+
+
+def _explain_for(m: MoveAnalysis, tag: str) -> dict:
+    """Explanation for a flagged move: LLM-polished when a key is configured,
+    otherwise the deterministic template. Grounded strictly on engine facts."""
+    template = _explain_move_zh(m)
+    if not coach_llm.available():
+        return template
+    ctx = {
+        "phase": PHASE_ZH.get(m.phase, m.phase),
+        "side": "白方" if m.color == chess.WHITE else "黑方",
+        "move_number": m.move_number,
+        "played": m.san,
+        "best": m.best_move_san,
+        "pv": " ".join(m.best_line_san) if m.best_line_san else m.best_move_san,
+        "eval_before": format_eval(m.eval_before_mover, m.mate_before),
+        "eval_after": format_eval(m.eval_after_mover, m.mate_after),
+        "state_before": _state_zh(m.eval_before_mover),
+        "state_after": _state_zh(m.eval_after_mover),
+        "cp_loss": m.cp_loss,
+        "reason_tag": tag,
+        "best_is_check": m.best_is_check,
+        "best_is_capture": m.best_is_capture,
+        "best_leads_to_mate_in": m.mate_before if (m.mate_before and m.mate_before > 0) else None,
+        "facts": _move_facts(m),
+    }
+    polished = coach_llm.polish_explanation(ctx)
+    return polished or template
+
+
 # ---------------------------------------------------------------------------
 # view builders
 # ---------------------------------------------------------------------------
@@ -132,7 +227,8 @@ def _critical_moments(ga: GameAnalysis, color: Optional[bool], threshold: int,
     for m in ga.moves:
         if color is not None and m.color != color:
             continue
-        if m.cp_loss < threshold:
+        keep, tag = _significance(m, threshold)
+        if not keep:
             continue
         moments.append({
             "move_number": m.move_number,
@@ -148,8 +244,10 @@ def _critical_moments(ga: GameAnalysis, color: Optional[bool], threshold: int,
             "classification": m.classification,
             "class_zh": CLASS_ZH.get(m.classification, m.classification),
             "forcing_miss": m.is_forcing_miss,
+            "tag": tag,
+            "tag_zh": TAG_ZH.get(tag, ""),
             "comment": _comment_for(m),
-            "explain": _explain_move_zh(m),
+            "explain": _explain_for(m, tag),
             "fen": m.fen_before,
             "lichess": lichess_url(m.fen_before),
             "svg": _board_svg(m.fen_before, m.uci, m.best_move_uci, m.color) if with_svg else "",
@@ -263,21 +361,46 @@ def build_opening_section(ga: GameAnalysis) -> dict:
     if ga.deviation_ply is not None:
         dev_move = next((m for m in moves if m.ply == ga.deviation_ply), None)
 
-    # Query the position *before* the first out-of-book move; if the game never
-    # left theory, query the last opening-phase position.
-    query_fen = None
-    if dev_move is not None:
-        query_fen = dev_move.fen_before
-    else:
-        opening_moves = [m for m in moves if m.phase == "opening"]
-        if opening_moves:
-            query_fen = opening_moves[-1].fen_after
-        elif moves:
-            query_fen = moves[min(len(moves) - 1, 9)].fen_after
+    book = get_default_book()
 
-    # Top-2 book choices at that position, each extended into a short line.
+    # Anchor the continuation choices at the *last real choice point*: the latest
+    # opening position (up to and including the deviation) where the book still
+    # offered at least two moves. The position right before leaving book is
+    # usually near-exhausted (only one book move), so anchoring there shows a
+    # single line; walking back to where the player genuinely had alternatives
+    # lets us present one or two real variations.
+    anchor_fen = None
+    anchor_move_number = None
+    anchor_turn = None
+    for m in moves:
+        if ga.deviation_ply is not None:
+            if m.ply > ga.deviation_ply:
+                break
+        elif m.phase != "opening":
+            break
+        if len(book.lookup(m.fen_before, top=2)) >= 2:
+            anchor_fen = m.fen_before
+            anchor_move_number = m.move_number
+            anchor_turn = m.color
+
+    # Fallbacks when no branching point was found (very narrow book line):
+    # the deviation position, else the last opening-phase position.
+    if anchor_fen is None:
+        if dev_move is not None:
+            anchor_fen = dev_move.fen_before
+            anchor_move_number = dev_move.move_number
+            anchor_turn = dev_move.color
+        else:
+            opening_moves = [m for m in moves if m.phase == "opening"]
+            if opening_moves:
+                anchor_fen = opening_moves[-1].fen_after
+            elif moves:
+                anchor_fen = moves[min(len(moves) - 1, 9)].fen_after
+    query_fen = anchor_fen
+
+    # Top-2 book choices at the anchor position, each extended into a short line.
     book_choices: list[dict] = []
-    pg = get_default_book().lookup(query_fen, top=2) if query_fen else []
+    pg = book.lookup(query_fen, top=2) if query_fen else []
     for mv in pg:
         line, end_fen = _book_line_from(query_fen, mv["uci"], plies=10)
         book_choices.append({
@@ -305,6 +428,9 @@ def build_opening_section(ga: GameAnalysis) -> dict:
         "in_book_full": ga.deviation_ply is None and bool(ga.opening_name),
         "book_choices": book_choices,
         "book_available": bool(book_choices),
+        "anchor_move_number": anchor_move_number,
+        "anchor_side": ("白方" if anchor_turn == chess.WHITE else "黑方")
+                        if anchor_turn is not None else None,
     }
 
 
@@ -441,7 +567,11 @@ def _md_opening(L: list, sec: dict) -> None:
     elif sec.get("in_book_full"):
         L.append("- **脱谱点：** 全程跟随理论主线，没有脱谱。")
     if sec.get("book_choices"):
-        L.append("- **开局库续法（前两个选择，各续约 5 回合）：**")
+        anchor = ""
+        if sec.get("anchor_move_number"):
+            side = sec.get("anchor_side") or ""
+            anchor = f"（第 {sec['anchor_move_number']} 回合{side}的选择点）"
+        L.append(f"- **开局库续法{anchor}（前两个选择，各续约 5 回合）：**")
         labels = ["首选", "次选"]
         for i, bc in enumerate(sec["book_choices"]):
             lbl = labels[i] if i < len(labels) else f"选择{i + 1}"

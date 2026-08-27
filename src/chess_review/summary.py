@@ -10,7 +10,7 @@ from typing import Optional
 
 import chess
 
-from .classify import BLUNDER, MISTAKE
+from .classify import BLUNDER, MISTAKE, significance
 from .models import GameAnalysis, MoveAnalysis
 
 
@@ -63,6 +63,10 @@ def build_summary_zh(ga: GameAnalysis, focus_color: Optional[bool] = None) -> di
     blunders = [m for m in moves if m.cp_loss >= BLUNDER]
     mistakes = [m for m in moves if MISTAKE <= m.cp_loss < BLUNDER]
     big_errors = sorted(blunders + mistakes, key=lambda m: m.cp_loss, reverse=True)
+    # Errors that actually changed the outcome (win thrown away / fell into
+    # trouble / missed a decisive mate) — used for the visible "关键失误" list so
+    # the summary highlights the same moves as the detailed sections.
+    key_errors = [m for m in big_errors if significance(m)[0]]
     forcing_misses = [m for m in big_errors if m.is_forcing_miss]
     quiet_errors = [m for m in big_errors if not m.is_forcing_miss]
     biggest = big_errors[0] if big_errors else None
@@ -105,7 +109,7 @@ def build_summary_zh(ga: GameAnalysis, focus_color: Optional[bool] = None) -> di
     if deviated:
         book = f"（理论主线 {ga.deviation_book_san}）" if ga.deviation_book_san else ""
         bad.append(f"第{(ga.deviation_ply + 1)//2}回合 {ga.deviation_move_san} 过早脱离开局理论{book}。")
-    for m in big_errors[:4]:
+    for m in key_errors[:4]:
         bad.append(_describe_move(m) + "。")
     if peak >= 200 and (score is None or score < 1.0):
         bad.append(f"曾手握 {_pawns(peak)} 的胜势，却没能拿下。")

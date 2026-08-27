@@ -10,3 +10,8 @@ examples
 games
 *.md
 !README.md
+
+# Secrets / API keys — never bundle into the image
+.env
+*.key
+chatgptapi.txt

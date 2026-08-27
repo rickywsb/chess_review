@@ -80,3 +80,42 @@ def test_polyglot_book_lookup():
     assert moves[0]["san"] in {"e4", "d4", "c4", "Nf3", "g3", "b3"}
     # An out-of-book / bogus position yields no moves, never raises.
     assert book.lookup("8/8/8/8/8/8/8/K6k w - - 0 1") == []
+
+
+def _mk_move(before, after, cp_loss, mate_before=None, mate_after=None):
+    """Minimal MoveAnalysis for exercising the selection layer."""
+    return MoveAnalysis(
+        ply=1, move_number=1, color=chess.WHITE, san="Xx", uci="a1a2",
+        fen_before="", fen_after="",
+        eval_before_mover=before, eval_after_mover=after,
+        eval_before_white=before, eval_after_white=after, cp_loss=cp_loss,
+        best_move_uci="b1b2", best_move_san="Yy",
+        phase="middlegame", classification="mistake",
+        best_is_capture=False, best_is_check=False, played_is_capture=False,
+        in_book=False, mate_before=mate_before, mate_after=mate_after,
+    )
+
+
+def test_significance_keeps_outcome_changing_moves():
+    from chess_review.render import _significance
+    # 均势 -> 劣势: threw the game into trouble.
+    assert _significance(_mk_move(-34, -176, 142), 100) == (True, "threw_game")
+    # 优势 -> 均势: let the win slip.
+    assert _significance(_mk_move(128, 5, 123), 100) == (True, "lost_win")
+    # Had a forced mate and let the decisive edge go with it: missed mate.
+    keep, tag = _significance(_mk_move(900, 150, 750, mate_before=4), 100)
+    assert keep and tag == "missed_mate"
+    # Huge blunder that still leaves a winning game is worth a note.
+    assert _significance(_mk_move(1121, 228, 893), 100) == (True, "big_error")
+
+
+def test_significance_drops_noise_while_crushing():
+    from chess_review.render import _significance
+    # +9.45 -> +7.28: both completely winning, don't nitpick.
+    assert _significance(_mk_move(945, 728, 217), 100) == (False, "still_winning")
+    # +8.34 -> +6.31: a 200cp "blunder" that changes nothing.
+    assert _significance(_mk_move(834, 631, 203), 100) == (False, "still_winning")
+    # Already lost, staying lost: not actionable.
+    assert _significance(_mk_move(-403, -554, 151), 100) == (False, "already_lost")
+    # Small slip inside the same balanced zone.
+    assert _significance(_mk_move(-28, -68, 40), 100)[0] is False
