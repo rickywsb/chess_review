@@ -116,6 +116,19 @@ def analyze_game(
 
         cp_loss = max(0, eval_before_mover - eval_after_mover)
 
+        # The opponent's principal variation *after* the played move is how the
+        # move gets punished. Keep it (in SAN) so explanations can describe the
+        # concrete consequence instead of guessing.
+        refutation_line_san: list[str] = []
+        if cur.pv:
+            tmp = board.copy(stack=False)
+            for mv in cur.pv[:6]:
+                try:
+                    refutation_line_san.append(tmp.san(mv))
+                    tmp.push(mv)
+                except (ValueError, AssertionError):
+                    break
+
         result.moves.append(
             MoveAnalysis(
                 ply=ply,
@@ -141,9 +154,9 @@ def analyze_game(
                 mate_before=mate_before,
                 mate_after=mate_after,
                 best_line_san=best_line_san,
+                refutation_line_san=refutation_line_san,
             )
         )
-
         prev = cur
         if progress:
             print(f"\r  analyzing move {ply}/{total}", end="", flush=True)

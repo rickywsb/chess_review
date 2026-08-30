@@ -43,6 +43,9 @@ class MoveAnalysis:
     mate_before: Optional[int] = None   # signed mate distance, mover POV
     mate_after: Optional[int] = None
     best_line_san: list[str] = field(default_factory=list)  # first plies of the best line
+    # Opponent's best line *after* the played move — i.e. how the mistake is
+    # punished. SAN, starting from ``fen_after``. Empty when the move was fine.
+    refutation_line_san: list[str] = field(default_factory=list)
 
     @property
     def is_blunder(self) -> bool:

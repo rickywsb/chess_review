@@ -135,46 +135,164 @@ def _king_flight_squares(board: chess.Board, king_color: bool) -> int:
     return count
 
 
-def _move_facts(m: MoveAnalysis) -> list[str]:
-    """Concrete, engine-independent board facts about a flagged move, used to
-    ground the LLM so it names the real idea instead of guessing. Fail-soft."""
+# Piece values / names used to describe material facts to the LLM.
+_PIECE_VAL = {
+    chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
+    chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0,
+}
+_PIECE_ZH = {
+    chess.PAWN: "兵", chess.KNIGHT: "马", chess.BISHOP: "象",
+    chess.ROOK: "车", chess.QUEEN: "后", chess.KING: "王",
+}
+
+
+def _material(board: chess.Board, color: bool) -> int:
+    return sum(_PIECE_VAL[p.piece_type]
+               for p in board.piece_map().values() if p.color == color)
+
+
+def _pts_zh(pts: int) -> str:
+    """Approximate a material-point swing as a piece in words."""
+    v = abs(pts)
+    if v >= 9:
+        return "一个后左右的子力"
+    if v >= 5:
+        return "一个车左右的子力"
+    if v >= 3:
+        return "一个轻子（马/象）左右"
+    if v >= 1:
+        return f"约 {v} 个兵的子力"
+    return "少量子力"
+
+
+def _loose_pieces(board: chess.Board, color: bool) -> list[tuple[int, chess.Piece]]:
+    """``color``'s pieces that are attacked and either undefended or attacked by
+    a cheaper piece — a reliable 'about to drop material' signal."""
+    opp = not color
+    out: list[tuple[int, chess.Piece]] = []
+    for sq, p in board.piece_map().items():
+        if p.color != color or p.piece_type == chess.KING:
+            continue
+        attackers = board.attackers(opp, sq)
+        if not attackers:
+            continue
+        defenders = board.attackers(color, sq)
+        min_atk = min(_PIECE_VAL[board.piece_at(a).piece_type] for a in attackers)
+        if not defenders or min_atk < _PIECE_VAL[p.piece_type]:
+            out.append((sq, p))
+    return out
+
+
+def _fork_targets(board_after: chess.Board, to_square: int) -> Optional[str]:
+    """If the piece now on ``to_square`` attacks 2+ valuable enemy pieces
+    (king or >= minor), return their names — a fork / double attack."""
+    p = board_after.piece_at(to_square)
+    if p is None:
+        return None
+    names: list[str] = []
+    for sq in board_after.attacks(to_square):
+        q = board_after.piece_at(sq)
+        if q is not None and q.color != p.color and (
+                q.piece_type == chess.KING or _PIECE_VAL[q.piece_type] >= 3):
+            names.append(_PIECE_ZH[q.piece_type])
+    if len(names) >= 2:
+        return "、".join(dict.fromkeys(names))
+    return None
+
+
+def _line_material_swing(fen_after: str, san_line: list[str], mover: bool) -> int:
+    """Replay the opponent's best line and return the net material change for
+    ``mover`` (negative => the mover loses material down that line)."""
+    try:
+        b = chess.Board(fen_after)
+    except (ValueError, TypeError):
+        return 0
+    opp = not mover
+    before = _material(b, mover) - _material(b, opp)
+    for san in san_line:
+        try:
+            b.push(b.parse_san(san))
+        except ValueError:
+            break
+    after = _material(b, mover) - _material(b, opp)
+    return after - before
+
+
+def _move_facts(m: "MoveAnalysis") -> list[str]:
+    """A battery of concrete, verifiable observations about a flagged move, each
+    tagged by category. Only TRUE observations are emitted, so the set varies by
+    move (material / tactics / refutation / king safety) and the LLM can pick the
+    one that actually explains the mistake instead of reusing a stock phrase."""
     facts: list[str] = []
     try:
         board = chess.Board(m.fen_before)
     except (ValueError, TypeError):
         return facts
-    opp = not board.turn  # the side being attacked / defending
+    mover = board.turn
+    opp = not mover
 
+    best = None
     try:
         best = chess.Move.from_uci(m.best_move_uci)
     except (ValueError, TypeError):
         best = None
+    after_best = None
     if best is not None and best in board.legal_moves:
-        if m.best_is_check:
-            facts.append(f"最佳着法 {m.best_move_san} 是将军。")
-        elif board.is_capture(best):
-            facts.append(f"最佳着法 {m.best_move_san} 是吃子。")
-        else:
-            facts.append(f"最佳着法 {m.best_move_san} 是安静的调整/预防着法。")
-        flight_before = _king_flight_squares(board, opp)
         after_best = board.copy(stack=False)
         after_best.push(best)
-        flight_best = _king_flight_squares(after_best, opp)
-        facts.append(f"走最佳着法前，对方王约有 {flight_before} 个可逃格；"
-                     f"走完只剩约 {flight_best} 个。")
 
+    # --- what the best move achieved (the missed resource) ------------------
+    if after_best is not None:
+        if m.best_is_check:
+            facts.append(f"【正解】最佳着法 {m.best_move_san} 是将军，能抢到先手。")
+        elif board.is_capture(best):
+            cap = board.piece_at(best.to_square)
+            capname = _PIECE_ZH.get(cap.piece_type, "子") if cap else "子"
+            recapture = after_best.is_attacked_by(opp, best.to_square)
+            facts.append(
+                f"【子力】最佳着法 {m.best_move_san} 吃掉对方的{capname}"
+                + ("，且落点没有子力换回，直接净得子。" if not recapture else "。"))
+        fork = _fork_targets(after_best, best.to_square)
+        if fork:
+            facts.append(
+                f"【战术】最佳着法 {m.best_move_san} 同时攻击对方的{fork}"
+                f"（叉子 / 双重攻击）。")
+
+    # --- the concrete consequence of the played move ------------------------
     try:
-        played = chess.Move.from_uci(m.uci)
-        if played in board.legal_moves:
-            after_played = board.copy(stack=False)
-            after_played.push(played)
-            facts.append(f"而实走 {m.san} 之后，对方王约有 "
-                         f"{_king_flight_squares(after_played, opp)} 个可逃格。")
+        after_played = chess.Board(m.fen_after)
     except (ValueError, TypeError):
-        pass
+        after_played = None
+    if after_played is not None:
+        loose = _loose_pieces(after_played, mover)
+        if loose:
+            desc = "、".join(
+                f"{chess.square_name(sq)} 的{_PIECE_ZH[p.piece_type]}"
+                for sq, p in loose[:2])
+            facts.append(
+                f"【子力】实走 {m.san} 之后，{desc}被攻击且缺乏保护，有丢子风险。")
 
-    if m.mate_before is not None and m.mate_before > 0:
-        facts.append(f"最佳着法可导向约 {m.mate_before} 步的强制杀。")
+    if m.refutation_line_san:
+        line = " ".join(m.refutation_line_san)
+        swing = _line_material_swing(m.fen_after, m.refutation_line_san, mover)
+        if swing <= -1:
+            facts.append(
+                f"【对手回应】实走之后对手的最强回应：{line}——"
+                f"这条变化里你大约会净丢{_pts_zh(swing)}。")
+        else:
+            facts.append(f"【对手回应】实走之后对手的最强回应：{line}。")
+
+    # --- king safety: only when a king hunt is genuinely the theme ----------
+    king_theme = bool(m.best_is_check or (m.mate_before and m.mate_before > 0))
+    if king_theme and after_best is not None:
+        flight_before = _king_flight_squares(board, opp)
+        flight_best = _king_flight_squares(after_best, opp)
+        facts.append(
+            f"【王的安全】对方王本就只有约 {flight_before} 个逃格；"
+            f"最佳着法 {m.best_move_san} 后只剩约 {flight_best} 个，杀网收紧。")
+    if m.mate_before and m.mate_before > 0:
+        facts.append(f"【强制】最佳着法可导向约 {m.mate_before} 步的强制杀。")
+
     return facts
 
 
@@ -191,6 +309,7 @@ def _explain_for(m: MoveAnalysis, tag: str) -> dict:
         "played": m.san,
         "best": m.best_move_san,
         "pv": " ".join(m.best_line_san) if m.best_line_san else m.best_move_san,
+        "refutation": " ".join(m.refutation_line_san),
         "eval_before": format_eval(m.eval_before_mover, m.mate_before),
         "eval_after": format_eval(m.eval_after_mover, m.mate_after),
         "state_before": _state_zh(m.eval_before_mover),
