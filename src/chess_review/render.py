@@ -270,6 +270,87 @@ def _pivot_capture(fen_before: str, played_uci: str, san_line: list[str],
     return result
 
 
+# Central squares whose control we track for the positional diff.
+_CENTER = (chess.D4, chess.E4, chess.D5, chess.E5)
+
+
+def _minor_major_mobility(board: chess.Board, color: bool,
+                          piece_types: tuple[int, ...]) -> int:
+    """Total pseudo-mobility (squares attacked that are empty or hold an enemy)
+    of ``color``'s pieces of the given types."""
+    total = 0
+    for sq, p in board.piece_map().items():
+        if p.color != color or p.piece_type not in piece_types:
+            continue
+        for t in board.attacks(sq):
+            q = board.piece_at(t)
+            if q is None or q.color != color:
+                total += 1
+    return total
+
+
+def _center_control(board: chess.Board, color: bool) -> int:
+    return sum(1 for s in _CENTER if board.is_attacked_by(color, s))
+
+
+def _king_shelter(board: chess.Board, color: bool) -> int:
+    """Count ``color``'s own pawns shielding its king: same or adjacent file and
+    1-2 ranks in front of the king (in the direction that color advances)."""
+    ksq = board.king(color)
+    if ksq is None:
+        return 0
+    kf, kr = chess.square_file(ksq), chess.square_rank(ksq)
+    cnt = 0
+    for sq, p in board.piece_map().items():
+        if p.color != color or p.piece_type != chess.PAWN:
+            continue
+        f, r = chess.square_file(sq), chess.square_rank(sq)
+        if abs(f - kf) > 1:
+            continue
+        ahead = (r - kr) if color == chess.WHITE else (kr - r)
+        if 1 <= ahead <= 2:
+            cnt += 1
+    return cnt
+
+
+def _pawn_weaknesses(board: chess.Board, color: bool) -> int:
+    """Number of doubled + isolated pawns for ``color`` (a rough structural
+    weakness count; higher is worse)."""
+    files: dict[int, int] = {}
+    for sq, p in board.piece_map().items():
+        if p.color == color and p.piece_type == chess.PAWN:
+            f = chess.square_file(sq)
+            files[f] = files.get(f, 0) + 1
+    doubled = sum(c - 1 for c in files.values() if c > 1)
+    isolated = sum(c for f, c in files.items()
+                   if (f - 1) not in files and (f + 1) not in files)
+    return doubled + isolated
+
+
+def _positional_diff(after_best: chess.Board, after_played: chess.Board,
+                     mover: bool) -> Optional[str]:
+    """Name the single positional feature the played move degraded most compared
+    with the best move. Both positions are one ply deep (opponent to move), so we
+    isolate exactly what choosing this move - instead of the best one - cost
+    ``mover`` structurally. Checked in priority order (most concrete first);
+    returns a Chinese phrase or ``None`` when nothing meaningful changed."""
+    if _king_shelter(after_played, mover) - _king_shelter(after_best, mover) <= -1:
+        return "把自己王前的兵盾走薄了，王的安全下降（王翼更漏风）"
+    if _pawn_weaknesses(after_played, mover) - _pawn_weaknesses(after_best, mover) >= 1:
+        return "让自己的兵形留下长期弱点（多出孤兵/叠兵）"
+    bishops = (chess.BISHOP,)
+    if _minor_major_mobility(after_played, mover, bishops) \
+            - _minor_major_mobility(after_best, mover, bishops) <= -3:
+        return "让自己的象活动空间明显变小（有变成坏象的趋势）"
+    if _center_control(after_played, mover) - _center_control(after_best, mover) <= -2:
+        return "削弱了自己对中心要点（d4/e4/d5/e5）的控制"
+    pieces = (chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN)
+    if _minor_major_mobility(after_played, mover, pieces) \
+            - _minor_major_mobility(after_best, mover, pieces) <= -4:
+        return "让整体子力更被动、活动空间变小，少了先手"
+    return None
+
+
 def _move_facts(m: "MoveAnalysis") -> list[str]:
     """A battery of concrete, verifiable observations about a flagged move, each
     tagged by category. Every consequence claim is read off the engine's actual
@@ -282,6 +363,8 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
         return facts
     mover = board.turn
     opp = not mover
+    swing = (_line_material_swing(m.fen_before, m.uci, m.refutation_line_san, mover)
+             if m.refutation_line_san else 0)
 
     best = None
     try:
@@ -313,7 +396,6 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
     # --- the concrete consequence, read off the actual refutation line ------
     if m.refutation_line_san:
         line = " ".join(m.refutation_line_san)
-        swing = _line_material_swing(m.fen_before, m.uci, m.refutation_line_san, mover)
         if swing <= -1:
             pivot = _pivot_capture(m.fen_before, m.uci, m.refutation_line_san, mover)
             if pivot:
@@ -327,6 +409,20 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
                     f"这条变化里你大约会净丢{_pts_zh(swing)}。")
         else:
             facts.append(f"【对手回应】实走之后对手的最强回应：{line}。")
+
+    # --- the dominant positional feature the played move degraded -----------
+    # Only for non-material slips: when nothing is genuinely hung, the eval drop
+    # is structural, so name the concrete feature instead of calling it 'subtle'.
+    if after_best is not None and swing > -1:
+        try:
+            after_played = chess.Board(m.fen_after)
+        except (ValueError, TypeError):
+            after_played = None
+        if after_played is not None:
+            feature = _positional_diff(after_best, after_played, mover)
+            if feature:
+                facts.append(
+                    f"【位置】和最佳着法 {m.best_move_san} 相比，这一步{feature}。")
 
     # --- king safety: only when a king hunt is genuinely the theme ----------
     king_theme = bool(m.best_is_check or (m.mate_before and m.mate_before > 0))

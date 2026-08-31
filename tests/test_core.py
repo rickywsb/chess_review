@@ -154,3 +154,16 @@ def test_material_swing_counts_whole_board_not_mid_exchange():
     assert _line_material_swing(fen2, "g2g3", ["Rxd1+"], chess.WHITE) == -5
 
 
+def test_positional_diff_names_king_airiness():
+    from chess_review.render import _positional_diff
+    # Same position except White's g-pawn is shoved to g4, thinning the king's
+    # shelter — the diff should name king airiness, not stay silent.
+    best = chess.Board("6k1/8/8/8/8/8/5PPP/6K1 b - - 0 1")
+    played = chess.Board("6k1/8/8/8/6P1/8/5P1P/6K1 b - - 0 1")
+    msg = _positional_diff(best, played, chess.WHITE)
+    assert msg is not None and "王" in msg
+    # No structural change -> no fabricated feature.
+    assert _positional_diff(best, best, chess.WHITE) is None
+
+
+
