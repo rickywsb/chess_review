@@ -164,5 +164,23 @@ def analyze_game(
     if progress and total:
         print()
 
+    # Targeted MultiPV pass: for the moves we will actually critique, measure how
+    # unique the best move was. This separates an only-move position (hard to
+    # find, every deviation is worse) from one with several equally good options
+    # (the slip was more avoidable), so explanations can match that tone.
+    for m in result.moves:
+        if m.cp_loss < 100:
+            continue
+        try:
+            b = chess.Board(m.fen_before)
+        except ValueError:
+            continue
+        alts = engine.analyse(b, multipv=3).alts or []
+        scored = [cp for cp, _mv in alts if cp is not None]
+        if len(scored) >= 2:
+            m.alt_gap_cp = max(0, scored[0] - scored[1])
+            top = scored[0]
+            m.alt_count = sum(1 for cp in scored if top - cp <= 30)
+
     result.final_eval_white = prev.cp_white
     return result

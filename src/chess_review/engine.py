@@ -24,6 +24,9 @@ class ScoreInfo:
     best_move: Optional[chess.Move]
     mate_mover: Optional[int]  # signed mate distance from side-to-move POV
     pv: list = None            # principal variation (list[chess.Move])
+    # Top candidate lines (mover POV), best first: list[(cp_mover, move)].
+    # Only populated when analyse() is called with multipv > 1.
+    alts: list = None
 
 
 def _clamp(value: int) -> int:
@@ -120,17 +123,27 @@ class Engine:
             return chess.engine.Limit(time=self.movetime / 1000.0)
         return chess.engine.Limit(depth=self.depth)
 
-    def analyse(self, board: chess.Board) -> ScoreInfo:
-        info = self._engine.analyse(board, self._limit())
-        pov = info["score"]
+    def analyse(self, board: chess.Board,
+                multipv: Optional[int] = None) -> ScoreInfo:
+        raw = self._engine.analyse(board, self._limit(), multipv=multipv)
+        infos = raw if isinstance(raw, list) else [raw]
+        primary = infos[0]
+        pov = primary["score"]
         white_score = pov.white()
         mover_score = pov.pov(board.turn)
 
         cp_white = _clamp(white_score.score(mate_score=MATE_CP))
         cp_mover = _clamp(mover_score.score(mate_score=MATE_CP))
 
-        pv = info.get("pv") or []
+        pv = primary.get("pv") or []
         best_move = pv[0] if pv else None
+
+        alts: list = []
+        for it in infos:
+            ipv = it.get("pv") or []
+            mv = ipv[0] if ipv else None
+            sc = it["score"].pov(board.turn)
+            alts.append((_clamp(sc.score(mate_score=MATE_CP)), mv))
 
         return ScoreInfo(
             cp_white=cp_white,
@@ -138,6 +151,7 @@ class Engine:
             best_move=best_move,
             mate_mover=mover_score.mate(),
             pv=list(pv[:8]),
+            alts=alts,
         )
 
     def close(self) -> None:

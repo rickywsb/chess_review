@@ -166,4 +166,23 @@ def test_positional_diff_names_king_airiness():
     assert _positional_diff(best, best, chess.WHITE) is None
 
 
+def test_choice_fact_distinguishes_only_move_and_many_options():
+    from chess_review.render import _choice_fact
+    m = _mk_move(200, 50, cp_loss=150)
+    m.best_move_san = "Nf3"
+    # A dominant best move with a big gap to the second choice -> only-move.
+    m.alt_gap_cp = 260
+    m.alt_count = 1
+    assert "唯一解" in (_choice_fact(m) or "")
+    # Several near-equal options -> the slip was avoidable.
+    m.alt_gap_cp = 15
+    m.alt_count = 4
+    assert "都不错" in (_choice_fact(m) or "")
+    # Small gap, only two close moves -> inconclusive, say nothing.
+    m.alt_gap_cp = 20
+    m.alt_count = 2
+    assert _choice_fact(m) is None
+
+
+
 

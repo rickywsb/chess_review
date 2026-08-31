@@ -351,6 +351,30 @@ def _positional_diff(after_best: chess.Board, after_played: chess.Board,
     return None
 
 
+def _choice_fact(m: "MoveAnalysis") -> Optional[str]:
+    """A 【选择】 observation drawn from the MultiPV context: was the best move the
+    only move, or were there several equally good options? This lets the coach
+    match tone to how forced the position was — an only-move is hard to find and
+    forgivable, whereas ignoring several easy good moves is more avoidable.
+    Returns a phrase, or ``None`` when the move was not measured / inconclusive."""
+    if m.alt_count >= 3:
+        return (f"【选择】这里其实有大约 {m.alt_count} 步都不错（评估接近），"
+                "实走这手偏差较明显——不是没有选择，而是选偏了。")
+    if m.alt_gap_cp >= 200:
+        if m.alt_gap_cp >= 600:
+            lead = "次选也要差出一大截"
+        else:
+            pawns = max(1, round(m.alt_gap_cp / 100))
+            lead = f"次选也要差约 {pawns} 个兵"
+        return (f"【选择】{m.best_move_san} 几乎是这里的唯一解，{lead}，"
+                "属于不易找到的一步。")
+    if m.alt_gap_cp >= 80:
+        pawns = max(1, round(m.alt_gap_cp / 100))
+        return (f"【选择】{m.best_move_san} 明显强于次选（约 {pawns} 个兵），"
+                "是这里的关键正着。")
+    return None
+
+
 def _move_facts(m: "MoveAnalysis") -> list[str]:
     """A battery of concrete, verifiable observations about a flagged move, each
     tagged by category. Every consequence claim is read off the engine's actual
@@ -435,6 +459,10 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
                 f"最佳着法 {m.best_move_san} 后只剩约 {flight_best} 个，杀网收紧。")
     if m.mate_before and m.mate_before > 0:
         facts.append(f"【强制】最佳着法可导向约 {m.mate_before} 步的强制杀。")
+
+    choice = _choice_fact(m)
+    if choice:
+        facts.append(choice)
 
     return facts
 

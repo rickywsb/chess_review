@@ -46,6 +46,12 @@ class MoveAnalysis:
     # Opponent's best line *after* the played move — i.e. how the mistake is
     # punished. SAN, starting from ``fen_after``. Empty when the move was fine.
     refutation_line_san: list[str] = field(default_factory=list)
+    # MultiPV context (filled only for critiqued moves): how far the best move
+    # led the second best (mover-POV centipawns), and how many near-equal
+    # options existed within 30cp of the best. Lets explanations tell an
+    # only-move position apart from one with several equally good choices.
+    alt_gap_cp: int = 0
+    alt_count: int = 1
 
     @property
     def is_blunder(self) -> bool:
