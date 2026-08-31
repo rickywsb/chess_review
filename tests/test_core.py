@@ -119,3 +119,26 @@ def test_significance_drops_noise_while_crushing():
     assert _significance(_mk_move(-403, -554, 151), 100) == (False, "already_lost")
     # Small slip inside the same balanced zone.
     assert _significance(_mk_move(-28, -68, 40), 100)[0] is False
+
+
+def test_classify_delta_frames_honestly():
+    from chess_review.classify import classify_delta
+    # Threw a forced mate but is still crushing: category threw_mate, framed as
+    # still winning — NOT "变差".
+    cat, state = classify_delta(30000, 234, 18, None, material_swing=0, cp_loss=2766)
+    assert cat == "threw_mate"
+    assert state == "仍占优势"
+    # The refutation line actually wins material off the mover.
+    cat, state = classify_delta(-34, -176, None, None, material_swing=-3, cp_loss=142)
+    assert cat == "lost_material"
+    # Had a real edge, now only equal, no material lost: the win slipped away.
+    cat, state = classify_delta(128, 5, None, None, material_swing=0, cp_loss=123)
+    assert cat == "lost_the_win"
+    assert state == "已回到均势"
+    # Small drop, no material, no mate: a quiet positional slip we admit to.
+    cat, _ = classify_delta(20, -40, None, None, material_swing=0, cp_loss=60)
+    assert cat == "positional_slip"
+    # Threw a mate and is no longer winning -> it cost the game.
+    cat, _ = classify_delta(30000, -50, 5, None, material_swing=0, cp_loss=3050)
+    assert cat == "lost_the_win"
+

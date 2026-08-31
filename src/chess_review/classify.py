@@ -155,3 +155,75 @@ def significance(m: "MoveAnalysis", threshold: int = MISTAKE) -> "tuple[bool, st
     if m.cp_loss >= max(BLUNDER, threshold):
         return True, "big_error"
     return False, "minor"
+
+
+# ---------------------------------------------------------------------------
+# eval-drop classification (the "why did the number fall" layer)
+# ---------------------------------------------------------------------------
+# Once a move is flagged, we still need to say *what kind* of mistake it was and
+# frame its magnitude honestly. The single most common inaccuracy is telling a
+# student "局面明显变差" when they are in fact still winning — so the resulting
+# STATE (from the eval after the move) drives the framing, not the size of the
+# drop. Categories are decided from the numbers + the material swing that the
+# engine's refutation line actually produces (see render._move_verdict).
+_STATE_WORD = {
+    2: "仍是胜势", 1: "仍占优势", 0: "已回到均势",
+    -1: "已处于下风", -2: "已落入败势",
+}
+
+CATEGORY_ZH = {
+    "threw_mate": "错过强制杀",
+    "lost_material": "丢失子力",
+    "lost_the_win": "把优势走没了",
+    "positional_slip": "细微的位置性选择",
+    "big_error": "严重失误",
+}
+
+# Honest framing instructions handed to the LLM so it does not over/under-state.
+CATEGORY_FRAME = {
+    "threw_mate": "重点是错过了直接的强制杀；按 resulting_state，你依然占优，"
+                  "绝不能说局面明显变差，语气应是『可惜，本可一击制胜』。",
+    "lost_material": "核心问题是丢失了子力；请依据『对手最强回应』说明具体丢了什么。",
+    "lost_the_win": "核心问题是把已经到手的优势/胜势走没了，回到了均势甚至更糟。",
+    "positional_slip": "这是一步细微的位置性选择，没有立刻的吃子或杀着，评估只是小幅下滑；"
+                       "请坦诚说明这一点，不要硬编具体棋理或战术。",
+    "big_error": "请顺着『对手最强回应』把后果讲清楚，不要空泛。",
+}
+
+
+def state_word(after_cp: int, mate_after: "int | None") -> str:
+    """Human word for the resulting position, honest about magnitude."""
+    return _STATE_WORD[outcome_zone(after_cp, mate_after)]
+
+
+def classify_delta(before_cp: int, after_cp: int,
+                   mate_before: "int | None", mate_after: "int | None",
+                   material_swing: int, cp_loss: int) -> "tuple[str, str]":
+    """Classify *why* the eval dropped and describe the resulting state.
+
+    Returns ``(category, resulting_state_word)``. ``material_swing`` is the net
+    material change for the mover along the engine's refutation line (negative
+    => the mover loses material). Rules run in priority order."""
+    state = state_word(after_cp, mate_after)
+    zb = outcome_zone(before_cp, mate_before)
+    za = outcome_zone(after_cp, mate_after)
+    threw_mate = (mate_before is not None and mate_before > 0
+                  and not (mate_after is not None and mate_after > 0))
+
+    # Had a forced mate, gave it up, but still winning: don't scare the student.
+    if threw_mate and za >= 1:
+        return "threw_mate", state
+    # The refutation line actually wins material off the mover.
+    if material_swing <= -1:
+        return "lost_material", state
+    # Had a real edge, now no better than equal: the win slipped away.
+    if zb >= 1 and za <= 0:
+        return "lost_the_win", state
+    # Threw a mate and is no longer winning -> it cost the game, not just a mate.
+    if threw_mate:
+        return "lost_the_win", state
+    # Small drop, no material change, no mate: a quiet positional slip.
+    if cp_loss < 150 and material_swing == 0:
+        return "positional_slip", state
+    return "big_error", state
+

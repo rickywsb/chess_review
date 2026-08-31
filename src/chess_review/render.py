@@ -9,7 +9,10 @@ import chess.svg
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from . import coach_llm
-from .classify import BLUNDER, MISTAKE, TAG_ZH, outcome_zone, significance
+from .classify import (
+    BLUNDER, MISTAKE, TAG_ZH, CATEGORY_ZH, CATEGORY_FRAME,
+    classify_delta, outcome_zone, significance, state_word,
+)
 from .metrics import PHASES
 from .models import GameAnalysis, MoveAnalysis
 from .polyglot_book import get_default_book
@@ -167,7 +170,9 @@ def _pts_zh(pts: int) -> str:
 
 def _loose_pieces(board: chess.Board, color: bool) -> list[tuple[int, chess.Piece]]:
     """``color``'s pieces that are attacked and either undefended or attacked by
-    a cheaper piece — a reliable 'about to drop material' signal."""
+    a cheaper piece. Kept as a helper but no longer used for narration facts —
+    consequence claims are now read off the engine's actual refutation line so
+    we never assert a 'hanging piece' the line does not truly win."""
     opp = not color
     out: list[tuple[int, chess.Piece]] = []
     for sq, p in board.piece_map().items():
@@ -218,11 +223,44 @@ def _line_material_swing(fen_after: str, san_line: list[str], mover: bool) -> in
     return after - before
 
 
+def _pivot_capture(fen_after: str, san_line: list[str],
+                   mover: bool) -> Optional[tuple[str, str]]:
+    """The single move in the refutation line that costs ``mover`` the most
+    material — the concrete point where the advantage turns. Read off the actual
+    line (ground truth), not guessed. Returns ``(move_san, captured_piece_zh)``
+    for the opponent's key capture, or ``None``."""
+    try:
+        b = chess.Board(fen_after)
+    except (ValueError, TypeError):
+        return None
+    opp = not mover
+    rel = _material(b, mover) - _material(b, opp)
+    worst = 0
+    result: Optional[tuple[str, str]] = None
+    for san in san_line:
+        try:
+            mv = b.parse_san(san)
+        except ValueError:
+            break
+        side = b.turn
+        captured = None
+        if b.is_capture(mv):
+            victim = b.piece_at(mv.to_square)
+            captured = _PIECE_ZH.get(victim.piece_type) if victim else None
+        b.push(mv)
+        new_rel = _material(b, mover) - _material(b, opp)
+        if side == opp and new_rel - rel < worst and captured:
+            worst = new_rel - rel
+            result = (san, captured)
+        rel = new_rel
+    return result
+
+
 def _move_facts(m: "MoveAnalysis") -> list[str]:
     """A battery of concrete, verifiable observations about a flagged move, each
-    tagged by category. Only TRUE observations are emitted, so the set varies by
-    move (material / tactics / refutation / king safety) and the LLM can pick the
-    one that actually explains the mistake instead of reusing a stock phrase."""
+    tagged by category. Every consequence claim is read off the engine's actual
+    refutation line (ground truth), not guessed one ply deep — so the set varies
+    by move and never asserts a 'hanging piece' the line does not truly win."""
     facts: list[str] = []
     try:
         board = chess.Board(m.fen_before)
@@ -258,27 +296,21 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
                 f"【战术】最佳着法 {m.best_move_san} 同时攻击对方的{fork}"
                 f"（叉子 / 双重攻击）。")
 
-    # --- the concrete consequence of the played move ------------------------
-    try:
-        after_played = chess.Board(m.fen_after)
-    except (ValueError, TypeError):
-        after_played = None
-    if after_played is not None:
-        loose = _loose_pieces(after_played, mover)
-        if loose:
-            desc = "、".join(
-                f"{chess.square_name(sq)} 的{_PIECE_ZH[p.piece_type]}"
-                for sq, p in loose[:2])
-            facts.append(
-                f"【子力】实走 {m.san} 之后，{desc}被攻击且缺乏保护，有丢子风险。")
-
+    # --- the concrete consequence, read off the actual refutation line ------
     if m.refutation_line_san:
         line = " ".join(m.refutation_line_san)
         swing = _line_material_swing(m.fen_after, m.refutation_line_san, mover)
         if swing <= -1:
-            facts.append(
-                f"【对手回应】实走之后对手的最强回应：{line}——"
-                f"这条变化里你大约会净丢{_pts_zh(swing)}。")
+            pivot = _pivot_capture(m.fen_after, m.refutation_line_san, mover)
+            if pivot:
+                pv_san, cap_zh = pivot
+                facts.append(
+                    f"【对手回应】实走之后对手的最强回应：{line}——"
+                    f"关键在 {pv_san} 吃掉你的{cap_zh}，你大约净丢{_pts_zh(swing)}。")
+            else:
+                facts.append(
+                    f"【对手回应】实走之后对手的最强回应：{line}——"
+                    f"这条变化里你大约会净丢{_pts_zh(swing)}。")
         else:
             facts.append(f"【对手回应】实走之后对手的最强回应：{line}。")
 
@@ -296,12 +328,35 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
     return facts
 
 
+def _move_verdict(m: "MoveAnalysis") -> dict:
+    """Classify *why* the eval dropped and how to frame it honestly, using the
+    material swing the engine's refutation line actually produces."""
+    try:
+        mover = chess.Board(m.fen_before).turn
+    except (ValueError, TypeError):
+        mover = m.color
+    swing = (_line_material_swing(m.fen_after, m.refutation_line_san, mover)
+             if m.refutation_line_san else 0)
+    category, rstate = classify_delta(
+        m.eval_before_mover, m.eval_after_mover,
+        m.mate_before, m.mate_after, swing, m.cp_loss)
+    return {
+        "category": category,
+        "category_zh": CATEGORY_ZH.get(category, ""),
+        "resulting_state": rstate,
+        "framing": CATEGORY_FRAME.get(category, ""),
+        "subtle": category == "positional_slip",
+        "material_swing": swing,
+    }
+
+
 def _explain_for(m: MoveAnalysis, tag: str) -> dict:
     """Explanation for a flagged move: LLM-polished when a key is configured,
     otherwise the deterministic template. Grounded strictly on engine facts."""
     template = _explain_move_zh(m)
     if not coach_llm.available():
         return template
+    verdict = _move_verdict(m)
     ctx = {
         "phase": PHASE_ZH.get(m.phase, m.phase),
         "side": "白方" if m.color == chess.WHITE else "黑方",
@@ -316,6 +371,11 @@ def _explain_for(m: MoveAnalysis, tag: str) -> dict:
         "state_after": _state_zh(m.eval_after_mover),
         "cp_loss": m.cp_loss,
         "reason_tag": tag,
+        "category": verdict["category"],
+        "category_zh": verdict["category_zh"],
+        "resulting_state": verdict["resulting_state"],
+        "framing": verdict["framing"],
+        "subtle": verdict["subtle"],
         "best_is_check": m.best_is_check,
         "best_is_capture": m.best_is_capture,
         "best_leads_to_mate_in": m.mate_before if (m.mate_before and m.mate_before > 0) else None,
