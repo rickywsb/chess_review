@@ -205,37 +205,52 @@ def _fork_targets(board_after: chess.Board, to_square: int) -> Optional[str]:
     return None
 
 
-def _line_material_swing(fen_after: str, san_line: list[str], mover: bool) -> int:
-    """Replay the opponent's best line and return the net material change for
-    ``mover`` (negative => the mover loses material down that line)."""
+def _line_material_swing(fen_before: str, played_uci: str,
+                         san_line: list[str], mover: bool) -> int:
+    """Net material change for ``mover`` caused by the played move *and* the
+    opponent's best reply, measured against the WHOLE board before the move.
+
+    Starting from ``fen_before`` (not the mid-exchange position after the move)
+    is what makes recaptures and even trades net to ~0: if the mover captures a
+    piece and the opponent captures back, the balance returns to where it
+    started, so we no longer mis-report an exchange as '丢子'. A negative result
+    means the mover genuinely ends down material relative to before the move."""
     try:
-        b = chess.Board(fen_after)
+        b = chess.Board(fen_before)
     except (ValueError, TypeError):
         return 0
     opp = not mover
-    before = _material(b, mover) - _material(b, opp)
+    base = _material(b, mover) - _material(b, opp)
+    try:
+        b.push(chess.Move.from_uci(played_uci))
+    except (ValueError, TypeError, AssertionError):
+        return 0
     for san in san_line:
         try:
             b.push(b.parse_san(san))
         except ValueError:
             break
-    after = _material(b, mover) - _material(b, opp)
-    return after - before
+    end = _material(b, mover) - _material(b, opp)
+    return end - base
 
 
-def _pivot_capture(fen_after: str, san_line: list[str],
+def _pivot_capture(fen_before: str, played_uci: str, san_line: list[str],
                    mover: bool) -> Optional[tuple[str, str]]:
-    """The single move in the refutation line that costs ``mover`` the most
-    material — the concrete point where the advantage turns. Read off the actual
-    line (ground truth), not guessed. Returns ``(move_san, captured_piece_zh)``
-    for the opponent's key capture, or ``None``."""
+    """The opponent capture that drives ``mover``'s material to its lowest point
+    *below where it started* (before the played move). Measuring from
+    ``fen_before`` means an even recapture never registers — only a genuine net
+    loss produces a pivot. Returns ``(move_san, captured_piece_zh)`` or ``None``."""
     try:
-        b = chess.Board(fen_after)
+        b = chess.Board(fen_before)
     except (ValueError, TypeError):
         return None
     opp = not mover
-    rel = _material(b, mover) - _material(b, opp)
-    worst = 0
+    base = _material(b, mover) - _material(b, opp)
+    try:
+        b.push(chess.Move.from_uci(played_uci))
+    except (ValueError, TypeError, AssertionError):
+        return None
+    low = base
     result: Optional[tuple[str, str]] = None
     for san in san_line:
         try:
@@ -248,11 +263,10 @@ def _pivot_capture(fen_after: str, san_line: list[str],
             victim = b.piece_at(mv.to_square)
             captured = _PIECE_ZH.get(victim.piece_type) if victim else None
         b.push(mv)
-        new_rel = _material(b, mover) - _material(b, opp)
-        if side == opp and new_rel - rel < worst and captured:
-            worst = new_rel - rel
+        rel = _material(b, mover) - _material(b, opp)
+        if side == opp and rel < low and captured:
+            low = rel
             result = (san, captured)
-        rel = new_rel
     return result
 
 
@@ -299,9 +313,9 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
     # --- the concrete consequence, read off the actual refutation line ------
     if m.refutation_line_san:
         line = " ".join(m.refutation_line_san)
-        swing = _line_material_swing(m.fen_after, m.refutation_line_san, mover)
+        swing = _line_material_swing(m.fen_before, m.uci, m.refutation_line_san, mover)
         if swing <= -1:
-            pivot = _pivot_capture(m.fen_after, m.refutation_line_san, mover)
+            pivot = _pivot_capture(m.fen_before, m.uci, m.refutation_line_san, mover)
             if pivot:
                 pv_san, cap_zh = pivot
                 facts.append(
@@ -319,9 +333,10 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
     if king_theme and after_best is not None:
         flight_before = _king_flight_squares(board, opp)
         flight_best = _king_flight_squares(after_best, opp)
-        facts.append(
-            f"【王的安全】对方王本就只有约 {flight_before} 个逃格；"
-            f"最佳着法 {m.best_move_san} 后只剩约 {flight_best} 个，杀网收紧。")
+        if flight_best < flight_before:
+            facts.append(
+                f"【王的安全】对方王本有约 {flight_before} 个逃格；"
+                f"最佳着法 {m.best_move_san} 后只剩约 {flight_best} 个，杀网收紧。")
     if m.mate_before and m.mate_before > 0:
         facts.append(f"【强制】最佳着法可导向约 {m.mate_before} 步的强制杀。")
 
@@ -335,7 +350,7 @@ def _move_verdict(m: "MoveAnalysis") -> dict:
         mover = chess.Board(m.fen_before).turn
     except (ValueError, TypeError):
         mover = m.color
-    swing = (_line_material_swing(m.fen_after, m.refutation_line_san, mover)
+    swing = (_line_material_swing(m.fen_before, m.uci, m.refutation_line_san, mover)
              if m.refutation_line_san else 0)
     category, rstate = classify_delta(
         m.eval_before_mover, m.eval_after_mover,

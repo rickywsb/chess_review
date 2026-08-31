@@ -142,3 +142,15 @@ def test_classify_delta_frames_honestly():
     cat, _ = classify_delta(30000, -50, 5, None, material_swing=0, cp_loss=3050)
     assert cat == "lost_the_win"
 
+
+def test_material_swing_counts_whole_board_not_mid_exchange():
+    from chess_review.render import _line_material_swing
+    # White trades rooks: Rxd8+ Kxd8. Measured against the whole board BEFORE the
+    # move, an even recapture nets 0 — not -5 as a mid-exchange snapshot would say.
+    fen = "3rk3/8/8/8/8/8/8/3RK3 w - - 0 1"
+    assert _line_material_swing(fen, "d1d8", ["Kxd8"], chess.WHITE) == 0
+    # A genuine hang still registers: White plays a quiet move, Black wins the rook.
+    fen2 = "3rk3/8/8/8/8/8/6P1/3R1K2 w - - 0 1"
+    assert _line_material_swing(fen2, "g2g3", ["Rxd1+"], chess.WHITE) == -5
+
+
