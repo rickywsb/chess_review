@@ -193,6 +193,19 @@ def test_best_line_gain_confirms_won_material():
     assert _best_line_material_gain(fen2, ["Rxd8+", "Kxd8"], chess.WHITE) == 0
 
 
+def test_judge_block_formats_diagnosis():
+    from chess_review.coach_llm import _judge_block, _TWO_PASS
+    assert _TWO_PASS is True  # two-pass on by default
+    block = _judge_block({"primary": "王翼漏风",
+                          "use_facts": ["【位置】X", "【选择】Y"],
+                          "honest_state": "已处于下风", "avoid": "别夸大"})
+    assert "核心主题：王翼漏风" in block
+    assert "【位置】X" in block and "【选择】Y" in block
+    assert "已处于下风" in block
+    # No selected facts -> tell the writer to follow the line, don't invent.
+    assert "顺着变化" in _judge_block({"primary": "x"})
+
+
 def test_rate_limiter_blocks_after_max():
     from chess_review.webapp import _RateLimiter
     lim = _RateLimiter(max_hits=2, window_s=100)

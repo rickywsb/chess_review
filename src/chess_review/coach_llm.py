@@ -21,6 +21,9 @@ from typing import Optional
 
 _MODEL = os.environ.get("CHESS_REVIEW_LLM_MODEL", "gpt-4o-mini")
 
+# Two-pass (judge -> write) is on by default; set to "0" for the single pass.
+_TWO_PASS = os.environ.get("CHESS_REVIEW_LLM_TWO_PASS", "1").strip() != "0"
+
 _SYSTEM = (
     "你是一位实力强劲、擅长讲解的国际象棋教练，用简体中文点评学生的对局。"
     "系统会给你一步棋的『引擎已核实的事实』：学生的实走着法、引擎的最佳着法、"
@@ -49,6 +52,30 @@ _SYSTEM = (
     "   - why：这步棋真正的问题是什么、错过了什么关键点（点明类别对应的具体棋理）。\n"
     "   - consequence：造成的实际后果（结合『对手最强回应』和评估变化）。\n"
     "   - what_to_do：应该怎么走、正解思路，以及一句可迁移的思考习惯。"
+)
+
+# ---- two-pass prompts -----------------------------------------------------
+# Pass 1 (judge): decide the single core cause and pick the relevant facts.
+_JUDGE_SYSTEM = (
+    "你是国际象棋引擎结论的诊断器（不是写作者）。系统会给你一步棋的引擎已核实事实、"
+    "两条变化（正解主变、对手最强回应）、评估分，以及若干按【类别】标注的候选观察，"
+    "并已用规则预判了『失误类型』和『真实处境』。\n"
+    "你的唯一职责：判断这步棋评估下降的『单一核心原因』，并从候选观察里挑出最能解释它的"
+    "1-2 条。严格只依据给出的事实，绝不臆造变化、棋子或战术。\n"
+    "注意区分：吃子之后被吃回只是兑换、不算丢子；仍占优势就不能当成要输。\n"
+    "只输出 JSON 对象，键：\n"
+    "  primary：用一句话（不超过 20 字）概括核心问题，例如『错过强制得子』『王翼漏风』"
+    "『把胜势走成均势』『忽视对手的叉子回击』。\n"
+    "  use_facts：数组，逐字照抄你选中的 1-2 条候选观察原文；若确实没有合适观察就留空数组。\n"
+    "  honest_state：照抄给定的『真实处境』。\n"
+    "  avoid：一句话提醒写作时要避免的夸大或缩小（例如『仍是胜势，别说要输了』）。"
+)
+
+# Pass 2 (write): narrate strictly around the diagnosis pass 1 produced.
+_WRITE_SYSTEM = _SYSTEM + (
+    "\n\n【本次为写作环节】系统已完成诊断，并在用户消息末尾给出"
+    "『核心主题 / 应使用的观察 / 真实处境 / 注意』。请严格围绕该诊断写作："
+    "只讲这个主题、只用指定的观察，不要再另选其它候选观察；处境框定以诊断为准。"
 )
 
 
@@ -157,13 +184,108 @@ def _polish_cached(payload_json: str) -> Optional[str]:
                       ensure_ascii=False)
 
 
+def _judge_block(judge: dict) -> str:
+    facts = judge.get("use_facts") or []
+    return "\n".join([
+        "",
+        "【诊断（必须据此写作）】",
+        f"核心主题：{judge.get('primary', '')}",
+        "应使用的观察：" + ("；".join(facts) if facts else "（无，请顺着变化如实说明）"),
+        f"真实处境：{judge.get('honest_state', '')}",
+        f"注意：{judge.get('avoid', '')}",
+    ])
+
+
+@lru_cache(maxsize=512)
+def _judge_cached(payload_json: str) -> Optional[str]:
+    """Pass 1: diagnose the single core cause and select the relevant facts."""
+    client = _client()
+    if client is None:
+        return None
+    facts = json.loads(payload_json)
+    try:
+        resp = client.chat.completions.create(
+            model=_MODEL,
+            temperature=0.0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _JUDGE_SYSTEM},
+                {"role": "user", "content": _user_prompt(facts)},
+            ],
+        )
+        content = resp.choices[0].message.content or ""
+    except Exception:
+        return None
+    try:
+        data = json.loads(content)
+    except (ValueError, TypeError):
+        return None
+    primary = data.get("primary")
+    honest = data.get("honest_state")
+    use_facts = data.get("use_facts")
+    if not isinstance(primary, str) or not primary:
+        return None
+    if not isinstance(use_facts, list):
+        use_facts = []
+    norm = {
+        "primary": primary,
+        "use_facts": [x for x in use_facts if isinstance(x, str) and x][:2],
+        "honest_state": honest if isinstance(honest, str) else "",
+        "avoid": data.get("avoid") if isinstance(data.get("avoid"), str) else "",
+    }
+    return json.dumps(norm, ensure_ascii=False, sort_keys=True)
+
+
+@lru_cache(maxsize=512)
+def _write_cached(payload_json: str, judge_json: str) -> Optional[str]:
+    """Pass 2: write the coach explanation, constrained to the diagnosis."""
+    client = _client()
+    if client is None:
+        return None
+    facts = json.loads(payload_json)
+    judge = json.loads(judge_json)
+    user = _user_prompt(facts) + "\n" + _judge_block(judge)
+    try:
+        resp = client.chat.completions.create(
+            model=_MODEL,
+            temperature=0.4,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _WRITE_SYSTEM},
+                {"role": "user", "content": user},
+            ],
+        )
+        content = resp.choices[0].message.content or ""
+    except Exception:
+        return None
+    try:
+        data = json.loads(content)
+    except (ValueError, TypeError):
+        return None
+    if not all(isinstance(data.get(k), str) and data.get(k) for k in
+               ("why", "consequence", "what_to_do")):
+        return None
+    return json.dumps({k: data[k] for k in ("why", "consequence", "what_to_do")},
+                      ensure_ascii=False)
+
+
 def polish_explanation(context: dict) -> Optional[dict]:
     """Return an LLM-polished ``{why, consequence, what_to_do}`` dict, or None
-    to signal the caller should keep the template explanation."""
+    to signal the caller should keep the template explanation.
+
+    Two-pass by default: a judge pass diagnoses the single core cause and picks
+    the relevant facts, then a writer pass narrates strictly around it. Falls
+    back to the single pass if the judge step is disabled or fails."""
     if _client() is None:
         return None
     payload = json.dumps(context, ensure_ascii=False, sort_keys=True)
-    out = _polish_cached(payload)
+    out = None
+    if _TWO_PASS:
+        judge = _judge_cached(payload)
+        if judge:
+            out = _write_cached(payload, judge)
+    if not out:
+        out = _polish_cached(payload)
     if not out:
         return None
     try:
