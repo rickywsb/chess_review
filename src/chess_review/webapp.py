@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import io
 import os
+import threading
+import time
+from collections import defaultdict, deque
 from typing import Optional
 
 import chess.pgn
@@ -78,6 +81,60 @@ def _clamp_int(value, default: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, n))
 
 
+# --- abuse / resource guards for the public endpoint ----------------------
+# The analyze endpoint is expensive (Stockfish + a paid LLM call), so a public
+# deployment needs basic protection. All limits are env-tunable; set
+# CHESS_REVIEW_RATE_MAX=0 to disable rate limiting (e.g. for local use).
+_RATE_MAX = _env_int("CHESS_REVIEW_RATE_MAX", 20)        # requests / window / IP
+_RATE_WINDOW = _env_int("CHESS_REVIEW_RATE_WINDOW", 60)  # seconds
+_MAX_PGN_BYTES = _env_int("CHESS_REVIEW_MAX_PGN_BYTES", 1_000_000)  # ~1 MB
+_MAX_GAMES = _env_int("CHESS_REVIEW_MAX_GAMES", 200)
+
+
+class _RateLimiter:
+    """Fixed-window per-client limiter. In-process (per gunicorn worker), which
+    is enough to blunt abusive bursts against the paid analyze endpoint without
+    adding an external store. ``max_hits <= 0`` disables it."""
+
+    def __init__(self, max_hits: int, window_s: int) -> None:
+        self.max_hits = max_hits
+        self.window_s = window_s
+        self._hits: dict[str, deque] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> tuple[bool, int]:
+        """Return ``(allowed, retry_after_seconds)`` for ``key``."""
+        if self.max_hits <= 0:
+            return True, 0
+        now = time.monotonic()
+        cutoff = now - self.window_s
+        with self._lock:
+            dq = self._hits[key]
+            while dq and dq[0] < cutoff:
+                dq.popleft()
+            if len(dq) >= self.max_hits:
+                return False, max(1, int(dq[0] + self.window_s - now) + 1)
+            dq.append(now)
+            if len(self._hits) > 4096:  # bound memory: drop drained buckets
+                for k in [k for k, v in self._hits.items() if not v]:
+                    self._hits.pop(k, None)
+            return True, 0
+
+
+_LIMITER = _RateLimiter(_RATE_MAX, _RATE_WINDOW)
+
+
+def _client_key() -> str:
+    """Best-effort client identity. Behind the fly.io proxy the real IP is in
+    ``Fly-Client-IP``; otherwise use the first ``X-Forwarded-For`` hop, then the
+    socket address."""
+    ip = request.headers.get("Fly-Client-IP")
+    if not ip:
+        xff = request.headers.get("X-Forwarded-For", "")
+        ip = xff.split(",")[0].strip() if xff else ""
+    return ip or (request.remote_addr or "unknown")
+
+
 def create_app() -> Flask:
     app = Flask(__name__, static_folder=None)
 
@@ -87,6 +144,14 @@ def create_app() -> Flask:
 
     @app.post("/api/analyze")
     def analyze():
+        allowed, retry = _LIMITER.allow(_client_key())
+        if not allowed:
+            resp = jsonify(ok=False,
+                           error=f"请求过于频繁，请约 {retry} 秒后再试。")
+            resp.status_code = 429
+            resp.headers["Retry-After"] = str(retry)
+            return resp
+
         # PGN can come from an uploaded file or a pasted text field.
         pgn_text = ""
         if "file" in request.files and request.files["file"].filename:
@@ -94,10 +159,13 @@ def create_app() -> Flask:
         else:
             pgn_text = request.form.get("pgn", "")
 
+        if len(pgn_text) > _MAX_PGN_BYTES:
+            return jsonify(ok=False, error="PGN 内容过大，请精简后再试。"), 413
+
         mode = request.form.get("mode", "student")
         player = (request.form.get("player") or "").strip() or None
         depth = _clamp_int(request.form.get("depth"), _DEFAULT_DEPTH, 6, _MAX_DEPTH)
-        max_games = _clamp_int(request.form.get("max_games"), 20, 1, 200)
+        max_games = _clamp_int(request.form.get("max_games"), min(20, _MAX_GAMES), 1, _MAX_GAMES)
 
         if not pgn_text.strip():
             return jsonify(ok=False, error="没有收到 PGN，请拖入或粘贴对局。"), 400

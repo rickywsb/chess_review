@@ -15,6 +15,11 @@ primary_region = 'sjc'
   CHESS_ENGINE_HASH_MB = "1024"
   CHESS_REVIEW_DEPTH = "18"
   CHESS_REVIEW_MAX_DEPTH = "26"
+  # Abuse / cost guards for the public endpoint (see webapp.py).
+  CHESS_REVIEW_RATE_MAX = "12"
+  CHESS_REVIEW_RATE_WINDOW = "60"
+  CHESS_REVIEW_MAX_GAMES = "30"
+  CHESS_REVIEW_MAX_PGN_BYTES = "1000000"
 [http_service]
   internal_port = 8080
   force_https = true

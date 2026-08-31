@@ -184,5 +184,20 @@ def test_choice_fact_distinguishes_only_move_and_many_options():
     assert _choice_fact(m) is None
 
 
+def test_rate_limiter_blocks_after_max():
+    from chess_review.webapp import _RateLimiter
+    lim = _RateLimiter(max_hits=2, window_s=100)
+    assert lim.allow("1.2.3.4")[0] is True
+    assert lim.allow("1.2.3.4")[0] is True
+    allowed, retry = lim.allow("1.2.3.4")
+    assert allowed is False and retry >= 1
+    # A different client is unaffected.
+    assert lim.allow("5.6.7.8")[0] is True
+    # max_hits <= 0 disables limiting entirely.
+    off = _RateLimiter(max_hits=0, window_s=100)
+    assert all(off.allow("x")[0] for _ in range(50))
+
+
+
 
 
