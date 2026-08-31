@@ -184,6 +184,15 @@ def test_choice_fact_distinguishes_only_move_and_many_options():
     assert _choice_fact(m) is None
 
 
+def test_best_line_gain_confirms_won_material():
+    from chess_review.render import _best_line_material_gain
+    fen = "3r4/6k1/8/8/8/8/8/3R1K2 w - - 0 1"
+    assert _best_line_material_gain(fen, ["Rxd8"], chess.WHITE) == 5
+    # An even trade nets zero, so no 'won material' claim is made.
+    fen2 = "3rk3/8/8/8/8/8/8/3RK3 w - - 0 1"
+    assert _best_line_material_gain(fen2, ["Rxd8+", "Kxd8"], chess.WHITE) == 0
+
+
 def test_rate_limiter_blocks_after_max():
     from chess_review.webapp import _RateLimiter
     lim = _RateLimiter(max_hits=2, window_s=100)

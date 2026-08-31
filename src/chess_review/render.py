@@ -234,6 +234,28 @@ def _line_material_swing(fen_before: str, played_uci: str,
     return end - base
 
 
+def _best_line_material_gain(fen_before: str, best_line_san: list[str],
+                            mover: bool) -> int:
+    """Net material the mover ends up ahead by over the engine's best line (which
+    starts with the best move). Positive => the best move's tactics genuinely win
+    material; ~0 => the point is positional / initiative, not a won piece. Used to
+    validate tactical claims against the actual line instead of 1-ply geometry."""
+    if not best_line_san:
+        return 0
+    try:
+        b = chess.Board(fen_before)
+    except (ValueError, TypeError):
+        return 0
+    opp = not mover
+    base = _material(b, mover) - _material(b, opp)
+    for san in best_line_san:
+        try:
+            b.push(b.parse_san(san))
+        except ValueError:
+            break
+    return (_material(b, mover) - _material(b, opp)) - base
+
+
 def _pivot_capture(fen_before: str, played_uci: str, san_line: list[str],
                    mover: bool) -> Optional[tuple[str, str]]:
     """The opponent capture that drives ``mover``'s material to its lowest point
@@ -401,21 +423,26 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
         after_best.push(best)
 
     # --- what the best move achieved (the missed resource) ------------------
+    # Tactical claims are validated against the engine's own best line: we only
+    # say the best move 'wins material' or 'forks' when that line actually nets
+    # the mover material (or the fork hits the king), never from 1-ply geometry.
+    best_gain = _best_line_material_gain(m.fen_before, m.best_line_san, mover)
     if after_best is not None:
         if m.best_is_check:
             facts.append(f"【正解】最佳着法 {m.best_move_san} 是将军，能抢到先手。")
-        elif board.is_capture(best):
+        elif board.is_capture(best) and best_gain >= 1:
             cap = board.piece_at(best.to_square)
             capname = _PIECE_ZH.get(cap.piece_type, "子") if cap else "子"
-            recapture = after_best.is_attacked_by(opp, best.to_square)
             facts.append(
-                f"【子力】最佳着法 {m.best_move_san} 吃掉对方的{capname}"
-                + ("，且落点没有子力换回，直接净得子。" if not recapture else "。"))
+                f"【子力】最佳着法 {m.best_move_san} 吃掉对方的{capname}，"
+                f"按主变走下去最终净得{_pts_zh(best_gain)}。")
         fork = _fork_targets(after_best, best.to_square)
-        if fork:
+        if fork and (best_gain >= 1 or "王" in fork):
+            tail = (f"，主变里最终净得{_pts_zh(best_gain)}" if best_gain >= 1
+                    else "，形成强有力的双重攻击")
             facts.append(
                 f"【战术】最佳着法 {m.best_move_san} 同时攻击对方的{fork}"
-                f"（叉子 / 双重攻击）。")
+                f"（叉子 / 双重攻击）{tail}。")
 
     # --- the concrete consequence, read off the actual refutation line ------
     if m.refutation_line_san:
