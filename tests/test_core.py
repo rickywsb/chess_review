@@ -193,6 +193,20 @@ def test_best_line_gain_confirms_won_material():
     assert _best_line_material_gain(fen2, ["Rxd8+", "Kxd8"], chess.WHITE) == 0
 
 
+def test_opened_line_fact_names_the_file_onto_the_king():
+    from chess_review.render import _opened_line_fact
+    # Black king on e8; White pawn e5 blocks the e-file from the Re1. Black plays
+    # a quiet ...a6 and White refutes with exd6, vacating e5 -> the e-file opens
+    # straight onto the Black king. The real cost is the line, not the knight.
+    fen = "4k3/p7/3n4/4P3/8/8/8/4R1K1 b - - 0 1"
+    fact = _opened_line_fact(fen, "a7a6", ["exd6"], chess.BLACK)
+    assert fact is not None
+    assert "e 线" in fact and "王" in fact
+    # A file that was already open is not credited to this move.
+    quiet = "4k3/pppp1ppp/8/8/8/8/PPPP1PPP/4K3 w - - 0 1"
+    assert _opened_line_fact(quiet, "a2a3", ["a7a6"], chess.WHITE) is None
+
+
 def test_judge_block_formats_diagnosis():
     from chess_review.coach_llm import _judge_block, _TWO_PASS
     assert _TWO_PASS is True  # two-pass on by default
