@@ -202,6 +202,10 @@ def test_opened_line_fact_names_the_file_onto_the_king():
     fact = _opened_line_fact(fen, "a7a6", ["exd6"], chess.BLACK)
     assert fact is not None
     assert "e 线" in fact and "王" in fact
+    # The exposure often peaks mid-line: even if the king is chased off the file
+    # by the end of the sequence, scanning every position still catches it.
+    chased = _opened_line_fact(fen, "a7a6", ["exd6", "Kd7"], chess.BLACK)
+    assert chased is not None and "e 线" in chased
     # A file that was already open is not credited to this move.
     quiet = "4k3/pppp1ppp/8/8/8/8/PPPP1PPP/4K3 w - - 0 1"
     assert _opened_line_fact(quiet, "a2a3", ["a7a6"], chess.WHITE) is None

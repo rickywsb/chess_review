@@ -300,26 +300,30 @@ _BISHOP_DIRS = ((1, 1, "diag"), (1, -1, "diag"), (-1, 1, "diag"), (-1, -1, "diag
 def _slider_pressure(board: chess.Board, target_sq: int, attacker_color: bool):
     """Enemy sliders of ``attacker_color`` that bear on ``target_sq`` along an
     open or single-blocker line. Returns a list of
-    ``(piece_type, kind, blockers, dvec)`` where ``kind`` is 'file'/'rank'/'diag',
-    ``blockers`` counts pieces standing between the slider and the target (0 =
-    direct/open line, 1 = x-ray through one blocker, e.g. a pin), and ``dvec`` is
-    the direction vector. Walking ray by ray lets us tell an open line from a
-    blocked one, which is what distinguishes 'lost a pawn' from 'opened a file
-    onto the king'."""
+    ``(piece_type, kind, blockers, dvec, dist)`` where ``kind`` is
+    'file'/'rank'/'diag', ``blockers`` counts pieces standing between the slider
+    and the target (0 = direct/open line, 1 = x-ray through one blocker, e.g. a
+    pin), ``dvec`` is the direction vector, and ``dist`` is how many squares away
+    the slider stands. Walking ray by ray lets us tell an open line from a blocked
+    one, which is what distinguishes 'lost a pawn' from 'opened a file onto the
+    king'; ``dist`` lets us ignore a piece sitting right next to the king (an
+    ordinary check) versus one striking down a genuinely opened line."""
     tf, tr = chess.square_file(target_sq), chess.square_rank(target_sq)
     out = []
     for df, dr, kind in _ROOK_DIRS + _BISHOP_DIRS:
         rook_like = kind != "diag"
         blockers = 0
+        steps = 0
         f, r = tf + df, tr + dr
         while 0 <= f < 8 and 0 <= r < 8:
+            steps += 1
             p = board.piece_at(chess.square(f, r))
             if p is not None:
                 match = (p.piece_type == chess.QUEEN
                          or (rook_like and p.piece_type == chess.ROOK)
                          or (not rook_like and p.piece_type == chess.BISHOP))
                 if p.color == attacker_color and match:
-                    out.append((p.piece_type, kind, blockers, (df, dr)))
+                    out.append((p.piece_type, kind, blockers, (df, dr), steps))
                     break
                 blockers += 1
                 if blockers > 1:
@@ -337,58 +341,87 @@ def _opened_line_fact(fen_before: str, played_uci: str, san_line: list[str],
     many 'you just lost a pawn' moves are actually serious: the *line*, not the
     pawn, is the point. We only report a line as opened when it was blocked/quiet
     before the move and is open (or pins the king) after the forcing sequence, so
-    a file that was already open is never mis-credited to this move."""
+    a file that was already open is never mis-credited to this move.
+
+    The exposure often peaks *inside* the line rather than at its end (e.g. a
+    rook checks along the newly opened file and the king is then chased off it),
+    so we scan every position along the sequence and report the first one where a
+    previously closed line opens onto the mover's king or queen."""
     try:
         before = chess.Board(fen_before)
     except (ValueError, TypeError):
         return None
     opp = not mover
-    resolved = before.copy(stack=False)
+    board = before.copy(stack=False)
     try:
-        resolved.push(chess.Move.from_uci(played_uci))
+        board.push(chess.Move.from_uci(played_uci))
     except (ValueError, TypeError, AssertionError):
         return None
+    positions = [board.copy(stack=False)]
     for san in san_line:
         try:
-            resolved.push(resolved.parse_san(san))
+            board.push(board.parse_san(san))
         except ValueError:
             break
+        positions.append(board.copy(stack=False))
 
-    targets: list[tuple[int, str]] = []
-    ksq = resolved.king(mover)
-    if ksq is not None:
-        targets.append((ksq, "王"))
-    for sq, p in resolved.piece_map().items():
-        if p.color == mover and p.piece_type == chess.QUEEN:
-            targets.append((sq, "后"))
+    # Collect every newly-opened line onto the mover's king/queen across the
+    # sequence, then keep the most telling one. Priority: a check delivered along
+    # the opened line (the king is hit right now) > a pin of the king > the king
+    # simply standing on an open line > the queen exposed. This stops a fleeting
+    # attack on the queen from hiding the real point (the king on an opened file).
+    best: Optional[tuple[int, str]] = None
+    for pos in positions:
+        in_check = pos.is_check()
+        targets: list[tuple[int, str]] = []
+        ksq = pos.king(mover)
+        if ksq is not None:
+            targets.append((ksq, "王"))
+        for sq, p in pos.piece_map().items():
+            if p.color == mover and p.piece_type == chess.QUEEN:
+                targets.append((sq, "后"))
 
-    for tsq, tname in targets:
-        after_p = _slider_pressure(resolved, tsq, opp)
-        if not after_p:
-            continue
-        before_by_dir = {dvec: bl for (_pt, _k, bl, dvec) in
-                         _slider_pressure(before, tsq, opp)}
-        for pt, kind, blockers, dvec in after_p:
-            was = before_by_dir.get(dvec)
-            newly_open = blockers == 0 and (was is None or was >= 1)
-            pin = tname == "王" and blockers == 1 and (was is None or was >= 2)
-            if not (newly_open or pin):
+        for tsq, tname in targets:
+            after_p = _slider_pressure(pos, tsq, opp)
+            if not after_p:
                 continue
-            pzh = _PIECE_ZH.get(pt, "子")
-            if kind == "file":
-                label = f"{chess.FILE_NAMES[chess.square_file(tsq)]} 线"
-            elif kind == "rank":
-                label = f"第 {chess.RANK_NAMES[chess.square_rank(tsq)]} 横线"
-            else:
-                label = "斜线"
-            if pin:
-                return (f"【线路】这一步暴露了{label}：你的王被对方的{pzh}沿这条线"
-                        "牵制（中间的子被别住形成钉子）——真正的隐患是线路，"
-                        "不只是丢子。")
-            return (f"【线路】实走之后经这段变化打开了{label}，你的{tname}正落在"
-                    f"这条线上，对方的{pzh}由此获得直接压制——真正的代价是被打开的"
-                    "线路，而不只是那个兵/子。")
-    return None
+            before_by_dir = {dvec: bl for (_pt, _k, bl, dvec, _d) in
+                             _slider_pressure(before, tsq, opp)}
+            for pt, kind, blockers, dvec, dist in after_p:
+                was = before_by_dir.get(dvec)
+                newly_open = blockers == 0 and (was is None or was >= 1)
+                pin = tname == "王" and blockers == 1 and (was is None or was >= 2)
+                # A slider right next to the king is an ordinary check, not an
+                # opened line; require a genuine distance down the line.
+                if dist < 2 or not (newly_open or pin):
+                    continue
+                if tname == "王":
+                    score = 5 if (in_check and blockers == 0) else (4 if pin else 3)
+                else:
+                    score = 1
+                if best is not None and score <= best[0]:
+                    continue
+                pzh = _PIECE_ZH.get(pt, "子")
+                if kind == "file":
+                    label = f"{chess.FILE_NAMES[chess.square_file(tsq)]} 线"
+                elif kind == "rank":
+                    label = f"第 {chess.RANK_NAMES[chess.square_rank(tsq)]} 横线"
+                else:
+                    label = "斜线"
+                if pin:
+                    fact = (f"【线路】这一步暴露了{label}：你的王被对方的{pzh}沿这条"
+                            "线牵制（中间的子被别住形成钉子）——真正的隐患是线路，"
+                            "不只是丢子。")
+                elif tname == "王" and in_check:
+                    fact = (f"【线路】实走之后经这段变化打开了{label}，对方的{pzh}"
+                            "顺着这条线直接将军你的王——真正的代价是被打开的线路，"
+                            "而不只是那个兵/子。")
+                else:
+                    fact = (f"【线路】实走之后经这段变化打开了{label}，你的{tname}正"
+                            f"落在这条线上，对方的{pzh}由此获得直接压制——真正的代价"
+                            "是被打开的线路，而不只是那个兵/子。")
+                best = (score, fact)
+    return best[1] if best else None
 
 
 # Central squares whose control we track for the positional diff.
@@ -562,10 +595,13 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
 
     # --- lines: did the move open a file/diagonal onto our king or queen? ----
     # Frequently the real cost of a pawn move/capture is not the pawn but the
-    # line it vacates. Verified against the actual forcing sequence.
-    line_fact = _opened_line_fact(m.fen_before, m.uci, m.refutation_line_san, mover)
-    if line_fact:
-        facts.append(line_fact)
+    # line it vacates. Only for genuine mistakes, and verified against the actual
+    # forcing sequence.
+    if m.cp_loss >= 100:
+        line_fact = _opened_line_fact(m.fen_before, m.uci, m.refutation_line_san,
+                                      mover)
+        if line_fact:
+            facts.append(line_fact)
 
     # --- the dominant positional feature the played move degraded -----------
     # Only for non-material slips: when nothing is genuinely hung, the eval drop
