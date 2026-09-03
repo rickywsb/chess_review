@@ -211,6 +211,52 @@ def test_opened_line_fact_names_the_file_onto_the_king():
     assert _opened_line_fact(quiet, "a2a3", ["a7a6"], chess.WHITE) is None
 
 
+def test_mate_threat_fact_surfaces_forced_mate():
+    from chess_review.render import _mate_threat_fact
+    # The played move leaves the mover getting mated: engine reports mate_after<0.
+    m = _mk_move(120, -29000, cp_loss=29000, mate_after=-3)
+    m.refutation_line_san = ["Qh4+", "g3", "Qxg3#"]
+    fact = _mate_threat_fact(m)
+    assert fact is not None and "杀" in fact and "3 步" in fact
+    # No mate anywhere -> no mate-threat claim invented.
+    assert _mate_threat_fact(_mk_move(120, -80, cp_loss=200)) is None
+    # Already being mated at least as fast before the move -> not caused here.
+    already = _mk_move(-29000, -29000, cp_loss=0, mate_before=-2, mate_after=-3)
+    assert _mate_threat_fact(already) is None
+    # A refutation line that itself ends in checkmate also triggers it.
+    vialine = _mk_move(120, -400, cp_loss=520)
+    vialine.refutation_line_san = ["Qe7#"]
+    assert _mate_threat_fact(vialine) is not None
+
+
+def test_refutation_fork_fact_names_the_double_attack():
+    from chess_review.render import _refutation_fork_fact
+    # After the blunder it is Black to move; ...Nc2+ forks the White king (e1)
+    # and rook (a1). This is the real reason, not a hanging pawn.
+    fen_after = "4k3/8/8/8/8/n7/8/R3K3 b - - 0 1"
+    fact = _refutation_fork_fact(fen_after, ["Nc2+"], chess.WHITE)
+    assert fact is not None and "叉子" in fact and "王" in fact and "车" in fact
+    # A quiet reply that attacks nothing valuable -> no fork claim.
+    quiet = "4k3/8/8/8/8/8/P7/4K3 b - - 0 1"
+    assert _refutation_fork_fact(quiet, ["Kd7"], chess.WHITE) is None
+
+
+def test_pin_fact_detects_absolute_and_relative_pins():
+    from chess_review.render import _pin_fact
+    # Absolute pin: the White knight on e2 is pinned to its king (e1) by the rook
+    # on e8 and cannot move.
+    absolute = "4r1k1/8/8/8/8/8/4N3/4K3 w - - 0 1"
+    fact = _pin_fact(absolute, chess.WHITE)
+    assert fact is not None and "牵制" in fact and "王" in fact
+    # Relative pin: the knight on c4 is pinned by the bishop on a6 to the more
+    # valuable rook on e2 behind it.
+    relative = "6k1/8/b7/8/2N5/8/4R3/6K1 w - - 0 1"
+    fact = _pin_fact(relative, chess.WHITE)
+    assert fact is not None and "牵制" in fact and "车" in fact
+    # No pin present -> nothing fabricated.
+    assert _pin_fact("6k1/8/8/8/8/8/8/6K1 w - - 0 1", chess.WHITE) is None
+
+
 def test_judge_block_formats_diagnosis():
     from chess_review.coach_llm import _judge_block, _TWO_PASS
     assert _TWO_PASS is True  # two-pass on by default

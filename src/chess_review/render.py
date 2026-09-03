@@ -424,6 +424,140 @@ def _opened_line_fact(fen_before: str, played_uci: str, san_line: list[str],
     return best[1] if best else None
 
 
+def _mate_threat_fact(m: "MoveAnalysis") -> Optional[str]:
+    """The played move walks into (or fails to prevent) a forced mate against the
+    mover. Engine-verified: we trust the engine's signed mate distance
+    (``mate_after``, mover POV) rather than guessing, and only fire when the move
+    is what let the mate in — i.e. the mover was not already being mated at least
+    as fast. This is the single most-discussed concept in human commentary, so
+    surfacing it as an explicit fact (not just a '#N' eval) lets the coach say the
+    real problem is the king, not the material."""
+    n: Optional[int] = None
+    ma = m.mate_after
+    if ma is not None and ma < 0:
+        mb = m.mate_before
+        # Already getting mated at least as fast before the move -> not caused here.
+        if mb is not None and mb < 0 and abs(mb) <= abs(ma):
+            return None
+        n = abs(ma)
+    elif m.refutation_line_san and m.refutation_line_san[-1].endswith("#"):
+        # The engine's punishment line itself ends in checkmate.
+        n = (len(m.refutation_line_san) + 1) // 2
+    if n is None:
+        return None
+    line = " ".join(m.refutation_line_san)
+    if line:
+        return (f"【杀棋威胁】实走之后对方形成约 {n} 步的强制杀：{line}——"
+                "真正的代价不是子力，而是你的王会被将死，必须优先解杀。")
+    return (f"【杀棋威胁】实走之后对方有约 {n} 步的强制杀——"
+            "真正的代价不是子力，而是你的王会被将死，必须优先解杀。")
+
+
+def _refutation_fork_fact(fen_after: str, refutation_san: list[str],
+                          mover: bool) -> Optional[str]:
+    """A move in the opponent's refutation line that forks two of the mover's
+    valuable pieces (king / queen / rook / minor). This is the '为什么错' for many
+    slips: not that a pawn hangs, but that the reply double-attacks and you cannot
+    save both. Grounded in the engine's own punishment line, so the fork is real."""
+    try:
+        b = chess.Board(fen_after)
+    except (ValueError, TypeError):
+        return None
+    opp = not mover
+    for san in refutation_san:
+        try:
+            mv = b.parse_san(san)
+        except ValueError:
+            break
+        side = b.turn
+        b.push(mv)
+        if side != opp:
+            continue
+        targets = _fork_targets(b, mv.to_square)
+        if targets:
+            forker = b.piece_at(mv.to_square)
+            pzh = _PIECE_ZH.get(forker.piece_type, "子") if forker else "子"
+            return (f"【战术】对手的回应 {san} 用{pzh}同时攻击你的{targets}"
+                    "（叉子 / 双重攻击）——你无法同时保住两处，必失其一。")
+    return None
+
+
+# All eight slider ray directions, reused for pin/skewer geometry.
+_SLIDE_DIRS = _ROOK_DIRS + _BISHOP_DIRS
+
+
+def _pin_fact(fen_after: str, mover: bool) -> Optional[str]:
+    """A mover piece pinned by an enemy slider against a more valuable piece or
+    the king, in the position after the played move. Extends the king-only pin in
+    ``_opened_line_fact`` to piece-to-piece pins (e.g. a knight pinned to the
+    rook), which cost material because the pinned piece cannot move off the line.
+    Reports the pin whose shielded piece is most valuable. Conservative: relative
+    pins only count when the shield is clearly more valuable (>= 2 points), so an
+    incidental equal-value alignment is not called a pin."""
+    try:
+        board = chess.Board(fen_after)
+    except (ValueError, TypeError):
+        return None
+    opp = not mover
+    best: Optional[tuple[int, str]] = None
+    for sq, p in board.piece_map().items():
+        # Only real pieces can be meaningfully pinned: a pinned pawn seldom loses
+        # material and "can't leave the line" reads oddly, so we skip pawns (and
+        # the king, which the opened-line detector already covers).
+        if p.color != mover or p.piece_type in (chess.KING, chess.PAWN):
+            continue
+        f0, r0 = chess.square_file(sq), chess.square_rank(sq)
+        for df, dr, kind in _SLIDE_DIRS:
+            rook_like = kind != "diag"
+            # An enemy slider directly attacking p along this ray (no blockers).
+            f, r = f0 + df, r0 + dr
+            slider = None
+            while 0 <= f < 8 and 0 <= r < 8:
+                q = board.piece_at(chess.square(f, r))
+                if q is not None:
+                    match = (q.piece_type == chess.QUEEN
+                             or (rook_like and q.piece_type == chess.ROOK)
+                             or (not rook_like and q.piece_type == chess.BISHOP))
+                    if q.color == opp and match:
+                        slider = q
+                    break
+                f += df
+                r += dr
+            if slider is None:
+                continue
+            # The mover piece shielded directly behind p on the same ray.
+            f, r = f0 - df, r0 - dr
+            shield = None
+            while 0 <= f < 8 and 0 <= r < 8:
+                q = board.piece_at(chess.square(f, r))
+                if q is not None:
+                    if q.color == mover:
+                        shield = q
+                    break
+                f -= df
+                r -= dr
+            if shield is None:
+                continue
+            shield_val = _PIECE_VAL[shield.piece_type]
+            is_king = shield.piece_type == chess.KING
+            if not is_king and shield_val - _PIECE_VAL[p.piece_type] < 2:
+                continue
+            rank_val = 100 if is_king else shield_val
+            if best is not None and rank_val <= best[0]:
+                continue
+            pzh = _PIECE_ZH[p.piece_type]
+            slzh = _PIECE_ZH[slider.piece_type]
+            if is_king:
+                fact = (f"【牵制】实走之后你的{pzh}被对方的{slzh}钉在王前（绝对钉子），"
+                        "无法离线，只能被动挨打。")
+            else:
+                szh = _PIECE_ZH[shield.piece_type]
+                fact = (f"【牵制】实走之后你的{pzh}被对方的{slzh}牵制在更值钱的{szh}前，"
+                        "动弹不得，通常会因此丢子。")
+            best = (rank_val, fact)
+    return best[1] if best else None
+
+
 # Central squares whose control we track for the positional diff.
 _CENTER = (chess.D4, chess.E4, chess.D5, chess.E5)
 
@@ -593,6 +727,13 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
         else:
             facts.append(f"【对手回应】实走之后对手的最强回应：{line}。")
 
+    # --- king hunt: did the move walk into a forced mate? -------------------
+    # The most-discussed theme in human commentary. Engine-verified via the
+    # signed mate distance, so we only assert it when a real forced mate exists.
+    mate_fact = _mate_threat_fact(m)
+    if mate_fact:
+        facts.append(mate_fact)
+
     # --- lines: did the move open a file/diagonal onto our king or queen? ----
     # Frequently the real cost of a pawn move/capture is not the pawn but the
     # line it vacates. Only for genuine mistakes, and verified against the actual
@@ -602,6 +743,15 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
                                       mover)
         if line_fact:
             facts.append(line_fact)
+        # A reply that forks the mover, or a piece left pinned to a costlier one:
+        # both are concrete tactical reasons a move is punished, grounded in the
+        # engine line / the resulting position.
+        fork_fact = _refutation_fork_fact(m.fen_after, m.refutation_line_san, mover)
+        if fork_fact:
+            facts.append(fork_fact)
+        pin_fact = _pin_fact(m.fen_after, mover)
+        if pin_fact:
+            facts.append(pin_fact)
 
     # --- the dominant positional feature the played move degraded -----------
     # Only for non-material slips: when nothing is genuinely hung, the eval drop
