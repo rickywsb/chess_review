@@ -257,6 +257,81 @@ def test_pin_fact_detects_absolute_and_relative_pins():
     assert _pin_fact("6k1/8/8/8/8/8/8/6K1 w - - 0 1", chess.WHITE) is None
 
 
+def test_skewer_fact_wins_the_piece_behind():
+    from chess_review.render import _skewer_fact
+    # White rook on e5 (front) is attacked by the Black rook on e8; the White
+    # bishop on e3 stands directly behind it — a skewer: when the rook moves the
+    # bishop falls.
+    fen = "4r1k1/8/8/4R3/8/4B3/8/6K1 b - - 0 1"
+    fact = _skewer_fact(fen, chess.WHITE)
+    assert fact is not None and "串" in fact and "象" in fact
+    # Nothing lined up -> no skewer invented.
+    assert _skewer_fact("6k1/8/8/8/8/8/8/6K1 b - - 0 1", chess.WHITE) is None
+
+
+def test_discovered_attack_fact_reads_the_unveiled_line():
+    from chess_review.render import _discovered_attack_fact
+    # Black's ...Bd6 steps the bishop off the e-file, unveiling the Black rook on
+    # e8 which now attacks the White queen on e2 — a discovered attack.
+    fen_after = "4r1k1/8/8/4b3/8/8/4Q3/6K1 b - - 0 1"
+    fact = _discovered_attack_fact(fen_after, ["Bd6"], chess.WHITE)
+    assert fact is not None and "闪击" in fact and "后" in fact
+    # A quiet king step reveals nothing -> no discovered attack.
+    assert _discovered_attack_fact(fen_after, ["Kf8"], chess.WHITE) is None
+
+
+def test_passed_pawn_fact_flags_an_allowed_passer():
+    from chess_review.render import _passed_pawn_fact
+    # After the best move a White pawn on e2 still holds back Black's d-pawn; the
+    # played move let that pawn advance to e4, so Black's d4-pawn becomes passed.
+    best = chess.Board("k7/8/8/8/3p4/8/4P3/K7 b - - 0 1")
+    played = chess.Board("k7/8/8/8/3pP3/8/8/K7 b - - 0 1")
+    fact = _passed_pawn_fact(best, played, chess.WHITE, endgame=True)
+    assert fact is not None and "通路兵" in fact and "d4" in fact
+    # Outside the endgame we stay quiet about passers.
+    assert _passed_pawn_fact(best, played, chess.WHITE, endgame=False) is None
+
+
+def test_weak_square_fact_names_a_new_hole():
+    from chess_review.render import _weak_square_fact
+    # With the pawn on e4 it still guards d5; pushing it to e5 leaves d5 a
+    # permanent hole that Black's c6-pawn controls.
+    best = chess.Board("6k1/8/2p5/8/4P3/8/8/6K1 w - - 0 1")
+    played = chess.Board("6k1/8/2p5/4P3/8/8/8/6K1 w - - 0 1")
+    fact = _weak_square_fact(best, played, chess.WHITE)
+    assert fact is not None and "弱格" in fact and "d5" in fact
+    # No new hole -> nothing to report.
+    assert _weak_square_fact(best, best, chess.WHITE) is None
+
+
+def test_outpost_fact_flags_a_planted_knight():
+    from chess_review.render import _outpost_fact
+    # The best move keeps Black's knight on f6; the played move let it hop to d5,
+    # a hole supported by the c6-pawn — a classic outpost against White.
+    best = chess.Board("6k1/8/2p2n2/8/8/8/8/6K1 w - - 0 1")
+    played = chess.Board("6k1/8/2p5/3n4/8/8/8/6K1 w - - 0 1")
+    fact = _outpost_fact(best, played, chess.WHITE)
+    assert fact is not None and "前哨" in fact and "d5" in fact
+    assert _outpost_fact(best, best, chess.WHITE) is None
+
+
+def test_zugzwang_fact_only_in_a_quiet_pawn_endgame():
+    from chess_review.render import _zugzwang_fact
+    # Pure K+P endgame, White to move with only quiet king moves; the top move is
+    # near-best yet still loses ground -> zugzwang.
+    m = _mk_move(120, 20, cp_loss=30)
+    m.fen_before = "4k3/8/4K3/4P3/8/8/8/8 w - - 0 1"
+    assert "逼移" in (_zugzwang_fact(m) or "")
+    # A piece on the board -> not a pawn endgame, so we do not claim zugzwang.
+    m2 = _mk_move(120, 20, cp_loss=30)
+    m2.fen_before = "4k3/8/4K3/4R3/8/8/8/8 w - - 0 1"
+    assert _zugzwang_fact(m2) is None
+    # A big single-move loss is an ordinary blunder, not zugzwang.
+    m3 = _mk_move(120, -200, cp_loss=320)
+    m3.fen_before = "4k3/8/4K3/4P3/8/8/8/8 w - - 0 1"
+    assert _zugzwang_fact(m3) is None
+
+
 def test_judge_block_formats_diagnosis():
     from chess_review.coach_llm import _judge_block, _TWO_PASS
     assert _TWO_PASS is True  # two-pass on by default

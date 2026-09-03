@@ -453,6 +453,38 @@ def _mate_threat_fact(m: "MoveAnalysis") -> Optional[str]:
             "真正的代价不是子力，而是你的王会被将死，必须优先解杀。")
 
 
+def _zugzwang_fact(m: "MoveAnalysis") -> Optional[str]:
+    """A king-and-pawn endgame where the mover is in (near) zugzwang: the
+    position is quiet (no captures or checks available), every move is roughly as
+    bad as the next (the played move is near-best), yet having to move worsens the
+    mover's own eval. This is verifiable without a null-move search — in a pure
+    K+P endgame with no forcing resources the eval can only drop because the mover
+    is obliged to move, which is exactly zugzwang. Kept deliberately narrow to
+    avoid mislabelling an ordinary lost endgame."""
+    try:
+        b = chess.Board(m.fen_before)
+    except (ValueError, TypeError):
+        return None
+    # Pure king-and-pawn endgame for both sides.
+    if any(p.piece_type not in (chess.PAWN, chess.KING)
+           for p in b.piece_map().values()):
+        return None
+    if b.is_check():
+        return None
+    legal = list(b.legal_moves)
+    if not legal or len(legal) > 10:
+        return None
+    # No forcing resources: only quiet waiting moves are available.
+    if any(b.is_capture(mv) or b.gives_check(mv) for mv in legal):
+        return None
+    # Every move is about equally bad (played ~ best), yet moving lost ground —
+    # the drop comes from the obligation to move, not from choosing this move.
+    if m.cp_loss > 60 or (m.eval_before_mover - m.eval_after_mover) < 80:
+        return None
+    return ("【位置】这是王兵残局里的逼移（zugzwang）：你没有可用的等着，"
+            "轮到你走本身就是负担——怎么走都会让局面变差，问题不在选着而在于被迫要动。")
+
+
 def _refutation_fork_fact(fen_after: str, refutation_san: list[str],
                           mover: bool) -> Optional[str]:
     """A move in the opponent's refutation line that forks two of the mover's
@@ -558,6 +590,154 @@ def _pin_fact(fen_after: str, mover: bool) -> Optional[str]:
     return best[1] if best else None
 
 
+def _skewer_fact(fen_after: str, mover: bool) -> Optional[str]:
+    """A mover piece skewered by an enemy slider: a valuable mover piece (king or
+    rook/queen) stands in front, with a cheaper mover piece directly behind it on
+    the same line, so when the front piece is forced to move the back one falls.
+    The mirror image of a pin (here the *front* piece is the more valuable one),
+    read straight off the position after the played move. Reports the skewer that
+    wins the most material."""
+    try:
+        board = chess.Board(fen_after)
+    except (ValueError, TypeError):
+        return None
+    opp = not mover
+    best: Optional[tuple[int, str]] = None
+    for sq, p in board.piece_map().items():
+        if p.color != mover:
+            continue
+        is_king = p.piece_type == chess.KING
+        front_val = 100 if is_king else _PIECE_VAL[p.piece_type]
+        # Only a genuinely valuable front piece (king / rook / queen) skewers.
+        if not is_king and front_val < 5:
+            continue
+        f0, r0 = chess.square_file(sq), chess.square_rank(sq)
+        for df, dr, kind in _SLIDE_DIRS:
+            rook_like = kind != "diag"
+            # An enemy slider directly attacking the front piece along this ray.
+            f, r = f0 + df, r0 + dr
+            slider = None
+            while 0 <= f < 8 and 0 <= r < 8:
+                q = board.piece_at(chess.square(f, r))
+                if q is not None:
+                    match = (q.piece_type == chess.QUEEN
+                             or (rook_like and q.piece_type == chess.ROOK)
+                             or (not rook_like and q.piece_type == chess.BISHOP))
+                    if q.color == opp and match:
+                        slider = q
+                    break
+                f += df
+                r += dr
+            if slider is None:
+                continue
+            # The mover piece standing directly behind, on the far side.
+            f, r = f0 - df, r0 - dr
+            back = None
+            while 0 <= f < 8 and 0 <= r < 8:
+                q = board.piece_at(chess.square(f, r))
+                if q is not None:
+                    if q.color == mover:
+                        back = q
+                    break
+                f -= df
+                r -= dr
+            if back is None or back.piece_type == chess.KING:
+                continue
+            back_val = _PIECE_VAL[back.piece_type]
+            # The back piece must be worth winning and cheaper than the front.
+            if back_val < 3 or (not is_king and back_val >= front_val):
+                continue
+            if best is not None and back_val <= best[0]:
+                continue
+            pzh = _PIECE_ZH[p.piece_type]
+            bzh = _PIECE_ZH[back.piece_type]
+            slzh = _PIECE_ZH[slider.piece_type]
+            fact = (f"【战术】实走之后你的{pzh}和后面的{bzh}被对方的{slzh}串在一条线上"
+                    f"（串击 / 穿透）——{pzh}被迫让开后，后面的{bzh}就保不住了。")
+            best = (back_val, fact)
+    return best[1] if best else None
+
+
+def _revealed_targets(board: chess.Board, empty_sq: int,
+                      attacker_color: bool, victim_color: bool) -> Optional[int]:
+    """After a piece vacated ``empty_sq``, look for an ``attacker_color`` slider on
+    one side of the now-empty square and a valuable ``victim_color`` piece on the
+    opposite side of the same line, both with a clear path — i.e. moving off the
+    square discovered the slider's attack. Returns the most valuable victim's
+    piece type (king ranked highest, = discovered check), or ``None``."""
+    f0, r0 = chess.square_file(empty_sq), chess.square_rank(empty_sq)
+    best: Optional[tuple[int, int]] = None
+    for df, dr, kind in _SLIDE_DIRS:
+        rook_like = kind != "diag"
+        # Slider on the +direction side of the vacated square.
+        f, r = f0 + df, r0 + dr
+        slider = None
+        while 0 <= f < 8 and 0 <= r < 8:
+            q = board.piece_at(chess.square(f, r))
+            if q is not None:
+                match = (q.piece_type == chess.QUEEN
+                         or (rook_like and q.piece_type == chess.ROOK)
+                         or (not rook_like and q.piece_type == chess.BISHOP))
+                if q.color == attacker_color and match:
+                    slider = q
+                break
+            f += df
+            r += dr
+        if slider is None:
+            continue
+        # Victim on the -direction side, revealed by the vacated square.
+        f, r = f0 - df, r0 - dr
+        victim = None
+        while 0 <= f < 8 and 0 <= r < 8:
+            q = board.piece_at(chess.square(f, r))
+            if q is not None:
+                if q.color == victim_color and (q.piece_type == chess.KING
+                        or _PIECE_VAL[q.piece_type] >= 3):
+                    victim = q.piece_type
+                break
+            f -= df
+            r -= dr
+        if victim is None:
+            continue
+        val = 100 if victim == chess.KING else _PIECE_VAL[victim]
+        if best is None or val > best[0]:
+            best = (val, victim)
+    return best[1] if best else None
+
+
+def _discovered_attack_fact(fen_after: str, refutation_san: list[str],
+                            mover: bool) -> Optional[str]:
+    """A move in the opponent's refutation line that springs a discovered attack:
+    the opponent moves a piece off a line and a slider behind it now strikes one
+    of the mover's valuable pieces (a discovered attack, or a discovered check
+    when the revealed line hits the king). Grounded in the engine's own line."""
+    try:
+        b = chess.Board(fen_after)
+    except (ValueError, TypeError):
+        return None
+    opp = not mover
+    for san in refutation_san:
+        try:
+            mv = b.parse_san(san)
+        except ValueError:
+            break
+        side = b.turn
+        from_sq = mv.from_square
+        b.push(mv)
+        if side != opp:
+            continue
+        victim = _revealed_targets(b, from_sq, opp, mover)
+        if victim is None:
+            continue
+        if victim == chess.KING:
+            return (f"【战术】对手的回应 {san} 是闪将：走开的子亮出后面的远程子直接将你的军，"
+                    "你必须先解将，往往因此丢子或失势。")
+        vzh = _PIECE_ZH[victim]
+        return (f"【战术】对手的回应 {san} 是闪击：走开的子亮出后面的远程子攻击你的{vzh}"
+                "——一步之间形成双重威胁，你很难同时兼顾。")
+    return None
+
+
 # Central squares whose control we track for the positional diff.
 _CENTER = (chess.D4, chess.E4, chess.D5, chess.E5)
 
@@ -613,6 +793,127 @@ def _pawn_weaknesses(board: chess.Board, color: bool) -> int:
     isolated = sum(c for f, c in files.items()
                    if (f - 1) not in files and (f + 1) not in files)
     return doubled + isolated
+
+
+def _is_pawn_hole(board: chess.Board, color: bool, sq: int) -> bool:
+    """True if ``color`` can never guard ``sq`` with a pawn — no friendly pawn
+    stands on an adjacent file from where it could still advance to control it."""
+    f, r = chess.square_file(sq), chess.square_rank(sq)
+    for psq in board.pieces(chess.PAWN, color):
+        pf, pr = chess.square_file(psq), chess.square_rank(psq)
+        if abs(pf - f) != 1:
+            continue
+        if color == chess.WHITE and pr < r:
+            return False
+        if color == chess.BLACK and pr > r:
+            return False
+    return True
+
+
+def _passed_pawns(board: chess.Board, color: bool) -> set[int]:
+    """Squares of ``color``'s passed pawns: no enemy pawn on the same or an
+    adjacent file lies ahead of them to stop their advance."""
+    opp = not color
+    enemy = [(chess.square_file(s), chess.square_rank(s))
+             for s in board.pieces(chess.PAWN, opp)]
+    out: set[int] = set()
+    for sq in board.pieces(chess.PAWN, color):
+        f, r = chess.square_file(sq), chess.square_rank(sq)
+        blocked = any(
+            abs(ef - f) <= 1 and ((color == chess.WHITE and er > r)
+                                  or (color == chess.BLACK and er < r))
+            for ef, er in enemy)
+        if not blocked:
+            out.add(sq)
+    return out
+
+
+def _weak_squares(board: chess.Board, color: bool) -> set[int]:
+    """Central squares in ``color``'s half that are permanent holes (no ``color``
+    pawn can ever guard them) and are currently controlled by the opponent —
+    latent weak squares the opponent can exploit. Edge files are ignored as
+    edge holes rarely matter."""
+    opp = not color
+    ranks = (2, 3, 4) if color == chess.WHITE else (3, 4, 5)
+    out: set[int] = set()
+    for sq in chess.SQUARES:
+        f, r = chess.square_file(sq), chess.square_rank(sq)
+        if r not in ranks or f in (0, 7):
+            continue
+        occ = board.piece_at(sq)
+        if occ is not None and occ.color == color and occ.piece_type == chess.PAWN:
+            continue
+        if not _is_pawn_hole(board, color, sq):
+            continue
+        if not board.is_attacked_by(opp, sq):
+            continue
+        out.add(sq)
+    return out
+
+
+def _opp_outposts(board: chess.Board, mover: bool) -> set[int]:
+    """Squares where the opponent has a minor piece planted on a hole in the
+    mover's half and defended by an opponent pawn — a classic outpost pressing
+    on the mover."""
+    opp = not mover
+    ranks = (2, 3, 4) if mover == chess.WHITE else (3, 4, 5)
+    out: set[int] = set()
+    minors = board.pieces(chess.KNIGHT, opp) | board.pieces(chess.BISHOP, opp)
+    for sq in minors:
+        f, r = chess.square_file(sq), chess.square_rank(sq)
+        if r not in ranks or f in (0, 7):
+            continue
+        if not _is_pawn_hole(board, mover, sq):
+            continue
+        if any(board.piece_at(a).piece_type == chess.PAWN
+               for a in board.attackers(opp, sq)):
+            out.add(sq)
+    return out
+
+
+def _passed_pawn_fact(after_best: chess.Board, after_played: chess.Board,
+                      mover: bool, endgame: bool) -> Optional[str]:
+    """The played move (versus the best move) handed the opponent a passed pawn,
+    or gave up one of the mover's own. Only surfaced in the endgame, where a
+    passer is most decisive."""
+    if not endgame:
+        return None
+    opp = not mover
+    opp_new = _passed_pawns(after_played, opp) - _passed_pawns(after_best, opp)
+    if opp_new:
+        name = chess.square_name(sorted(opp_new)[0])
+        return (f"【位置】和最佳着法相比，这一步放任对手在 {name} 形成通路兵——"
+                "残局里这个兵会不断前进，成为很难拦住的威胁。")
+    mine_lost = _passed_pawns(after_best, mover) - _passed_pawns(after_played, mover)
+    if mine_lost:
+        name = chess.square_name(sorted(mine_lost)[0])
+        return (f"【位置】和最佳着法相比，这一步丢掉了你在 {name} 本可拥有的通路兵，"
+                "残局里少了一个关键的进攻资源。")
+    return None
+
+
+def _weak_square_fact(after_best: chess.Board, after_played: chess.Board,
+                      mover: bool) -> Optional[str]:
+    """The played move created a new weak square (hole) in the mover's camp that
+    the opponent controls and the best move avoided."""
+    new = _weak_squares(after_played, mover) - _weak_squares(after_best, mover)
+    if not new:
+        return None
+    name = chess.square_name(sorted(new)[0])
+    return (f"【位置】和最佳着法相比，这一步在自己阵营留下弱格 {name}（兵再也守不住它），"
+            "对方的子力可以长期占据这里施压。")
+
+
+def _outpost_fact(after_best: chess.Board, after_played: chess.Board,
+                  mover: bool) -> Optional[str]:
+    """The played move let the opponent establish an outpost (a minor on a
+    pawn-supported hole in the mover's half) that the best move prevented."""
+    new = _opp_outposts(after_played, mover) - _opp_outposts(after_best, mover)
+    if not new:
+        return None
+    name = chess.square_name(sorted(new)[0])
+    return (f"【位置】和最佳着法相比，这一步让对方的子力在 {name} 扎下前哨"
+            "（有兵保护、你又赶不走），会长期压制你的阵地。")
 
 
 def _positional_diff(after_best: chess.Board, after_played: chess.Board,
@@ -734,6 +1035,11 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
     if mate_fact:
         facts.append(mate_fact)
 
+    # --- zugzwang: a quiet K+P endgame where being obliged to move is the loss.
+    zz_fact = _zugzwang_fact(m)
+    if zz_fact:
+        facts.append(zz_fact)
+
     # --- lines: did the move open a file/diagonal onto our king or queen? ----
     # Frequently the real cost of a pawn move/capture is not the pawn but the
     # line it vacates. Only for genuine mistakes, and verified against the actual
@@ -743,15 +1049,23 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
                                       mover)
         if line_fact:
             facts.append(line_fact)
-        # A reply that forks the mover, or a piece left pinned to a costlier one:
-        # both are concrete tactical reasons a move is punished, grounded in the
-        # engine line / the resulting position.
+        # A reply that forks the mover, a discovered attack sprung in the line, a
+        # piece left pinned to a costlier one, or one skewered in front of a
+        # cheaper one: concrete tactical reasons the move is punished, each
+        # grounded in the engine line / the resulting position.
         fork_fact = _refutation_fork_fact(m.fen_after, m.refutation_line_san, mover)
         if fork_fact:
             facts.append(fork_fact)
+        disc_fact = _discovered_attack_fact(m.fen_after, m.refutation_line_san,
+                                            mover)
+        if disc_fact:
+            facts.append(disc_fact)
         pin_fact = _pin_fact(m.fen_after, mover)
         if pin_fact:
             facts.append(pin_fact)
+        skewer_fact = _skewer_fact(m.fen_after, mover)
+        if skewer_fact:
+            facts.append(skewer_fact)
 
     # --- the dominant positional feature the played move degraded -----------
     # Only for non-material slips: when nothing is genuinely hung, the eval drop
@@ -766,6 +1080,17 @@ def _move_facts(m: "MoveAnalysis") -> list[str]:
             if feature:
                 facts.append(
                     f"【位置】和最佳着法 {m.best_move_san} 相比，这一步{feature}。")
+            # More specific structural costs the move let the opponent obtain: a
+            # passed pawn (endgame), a permanent weak square, or an outpost. Each
+            # is attributed to this move by diffing against the best move.
+            endgame = m.phase == "endgame"
+            for specific in (
+                _passed_pawn_fact(after_best, after_played, mover, endgame),
+                _weak_square_fact(after_best, after_played, mover),
+                _outpost_fact(after_best, after_played, mover),
+            ):
+                if specific:
+                    facts.append(specific)
 
     # --- king safety: only when a king hunt is genuinely the theme ----------
     king_theme = bool(m.best_is_check or (m.mate_before and m.mate_before > 0))
