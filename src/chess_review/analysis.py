@@ -1,7 +1,7 @@
 """Core per-game analysis: centipawn loss, classification, phases, openings."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import chess
 import chess.pgn
@@ -11,6 +11,9 @@ from .engine import Engine
 from .models import GameAnalysis, MoveAnalysis
 from .opening_book import OpeningBook
 from .polyglot_book import get_default_book
+
+if TYPE_CHECKING:
+    from .master_db import MasterOpeningDatabase
 
 
 def _headers(game: chess.pgn.Game) -> dict:
@@ -22,6 +25,7 @@ def analyze_game(
     engine: Engine,
     book: Optional[OpeningBook] = None,
     progress: bool = False,
+    master_db: Optional["MasterOpeningDatabase"] = None,
 ) -> GameAnalysis:
     """Analyze one game and return a populated :class:`GameAnalysis`."""
     headers = _headers(game)
@@ -62,6 +66,9 @@ def analyze_game(
 
     deviation_ply = result.deviation_ply
     book_loaded = book is not None and book.loaded
+    master_max_ply = 0
+    if master_db is not None:
+        master_max_ply = int(master_db.metadata().get("max_ply", 0) or 0)
 
     # First analysis: the starting position.
     prev = engine.analyse(board)
@@ -101,6 +108,32 @@ def analyze_game(
         eval_before_mover = prev.cp_mover
         eval_before_white = prev.cp_white
         mate_before = prev.mate_mover
+        master_context = None
+        if master_db is not None and ply <= master_max_ply:
+            master = master_db.lookup(board, top=0)
+            if master is not None:
+                master_context = {
+                    "position_key": master.position_key,
+                    "total_games": master.total_games,
+                    "source": master.source,
+                    "database_version": master.database_version,
+                    "moves": [
+                        {
+                            "uci": item.uci,
+                            "san": item.san,
+                            "games": item.games,
+                            "white_wins": item.white_wins,
+                            "draws": item.draws,
+                            "black_wins": item.black_wins,
+                            "white_score_pct": item.white_score_pct,
+                            "avg_rating": item.avg_rating,
+                            "play_rate": item.play_rate,
+                            "first_year": item.first_year,
+                            "last_year": item.last_year,
+                        }
+                        for item in master.moves
+                    ],
+                }
 
         board.push(move)
         cur = engine.analyse(board)
@@ -155,6 +188,7 @@ def analyze_game(
                 mate_after=mate_after,
                 best_line_san=best_line_san,
                 refutation_line_san=refutation_line_san,
+                master_context=master_context,
             )
         )
         prev = cur

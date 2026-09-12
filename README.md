@@ -73,6 +73,62 @@ chess-review report 2025/*.pgn --player "Test Player" --depth 16
 
 Outputs `reports/<player>-report.md` and `.html`.
 
+## Versioned training dataset
+
+Export engine-grounded, two-pass teacher examples for later fine-tuning:
+
+```bash
+chess-review dataset games/*.pgn \
+  --out datasets/chess-review.jsonl \
+  --max-samples 100
+```
+
+The exporter uses local Stockfish with one thread by default, rejects any LLM
+response that violates the fact or output contract, and keeps every game in a
+single deterministic train/dev/test split. It writes canonical JSONL plus a
+sidecar manifest containing engine settings and hashes for the engine binary,
+prompts, detectors, and opening books. A configured LLM teacher is required.
+
+## Local master opening database
+
+Download one or more monthly PGN ZIP files from the
+[Lichess Elite Database](https://database.nikonoel.fr/), then build a compact,
+transposition-aware SQLite opening index:
+
+```bash
+chess-review master-db build downloads/lichess_elite_2025-*.zip \
+  --out data/master-openings.sqlite \
+  --max-ply 40
+```
+
+The builder streams compressed archives, stores no player identities, removes
+duplicate games, and records source SHA-256 hashes and build filters. Existing
+databases are protected unless `--force` is supplied. If building from an
+unfiltered PGN source, add `--min-rating 2300` (both players must qualify).
+
+Inspect the provenance or query a position directly:
+
+```bash
+chess-review master-db info --db data/master-openings.sqlite
+chess-review master-db query --db data/master-openings.sqlite \
+  --fen "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+```
+
+Enable the database when generating a game or player report:
+
+```bash
+chess-review review games/example.pgn --master-db data/master-openings.sqlite
+chess-review report games/*.pgn --player "Player Name" \
+  --master-db data/master-openings.sqlite
+```
+
+For the web app, set `CHESS_REVIEW_MASTER_DB=data/master-openings.sqlite`.
+Reports show master-game frequency and result statistics beside Stockfish's
+choice. Popularity is empirical evidence only and never changes engine scores,
+move classifications, or the reported engine-best move. Positions with fewer
+than 50 indexed games are omitted; positions with fewer than 200 are marked as
+small samples.
+
 ## Key options
 
 | Option | Meaning |
@@ -80,6 +136,7 @@ Outputs `reports/<player>-report.md` and `.html`.
 | `--engine PATH` | Path to a Stockfish binary (otherwise auto-detected). |
 | `--depth N` | Engine search depth (default 13; raise for accuracy, lower for speed). |
 | `--threads N` | Engine threads (default 1). |
+| `--master-db PATH` | Optional local SQLite master opening database. |
 | `--format md,html` | Which report formats to write. |
 | `--threshold CP` | (review) minimum centipawn loss to list as a critical moment. |
 | `--limit N` | (report) analyze only the first N games for a quick pass. |

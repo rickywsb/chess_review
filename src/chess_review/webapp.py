@@ -26,6 +26,7 @@ from .analysis import analyze_game
 from .classify import MISTAKE
 from .engine import Engine
 from .metrics import build_player_report
+from .master_db import MasterOpeningDatabase
 from .opening_book import OpeningBook
 from .render import (
     build_game_view,
@@ -180,10 +181,13 @@ def create_app() -> Flask:
             return jsonify(ok=False, error="历史回测需要填写棋手名字。"), 400
 
         try:
+            master_path = os.environ.get("CHESS_REVIEW_MASTER_DB")
+            master_db = MasterOpeningDatabase(master_path) if master_path else None
             with Engine(depth=depth) as engine:
                 if mode == "backtest":
                     subset = games[:max_games]
-                    analyses = [analyze_game(g, engine, book=_book()) for g in subset]
+                    analyses = [analyze_game(g, engine, book=_book(), master_db=master_db)
+                                for g in subset]
                     report = build_player_report(analyses, player)
                     html = render_player_html(report)
                     title = f"{player} · 历史回测（{len(subset)} 局）"
@@ -192,7 +196,8 @@ def create_app() -> Flask:
 
                 # single-game modes analyze the first game in the file
                 game = games[0]
-                ga = analyze_game(game, engine, book=_book(), progress=False)
+                ga = analyze_game(game, engine, book=_book(), progress=False,
+                                  master_db=master_db)
                 dual = (mode == "student")
                 view = build_game_view(ga, player=player, threshold=MISTAKE,
                                        with_svg=True, dual=dual)
@@ -206,6 +211,9 @@ def create_app() -> Flask:
                            "请先运行 `chess-review setup`。"), 500
         except Exception as exc:  # noqa: BLE001 - surface any engine/parse error to UI
             return jsonify(ok=False, error=f"分析失败：{exc}"), 500
+        finally:
+            if "master_db" in locals() and master_db is not None:
+                master_db.close()
 
     return app
 

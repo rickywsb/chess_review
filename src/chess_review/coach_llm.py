@@ -14,12 +14,14 @@ only sent once.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from functools import lru_cache
 from typing import Optional
 
 _MODEL = os.environ.get("CHESS_REVIEW_LLM_MODEL", "gpt-4o-mini")
+PROMPT_VERSION = "2026-09-12.1"
 
 # Two-pass (judge -> write) is on by default; set to "0" for the single pass.
 _TWO_PASS = os.environ.get("CHESS_REVIEW_LLM_TWO_PASS", "1").strip() != "0"
@@ -140,6 +142,20 @@ def available() -> bool:
     return _client() is not None
 
 
+def prompt_metadata() -> dict:
+    """Return prompt identity fields stored with every generated sample."""
+    prompt_text = "\n".join((_SYSTEM, _JUDGE_SYSTEM, _WRITE_SYSTEM))
+    return {
+        "version": PROMPT_VERSION,
+        "sha256": hashlib.sha256(prompt_text.encode("utf-8")).hexdigest(),
+        "teacher_model": _MODEL,
+        "two_pass": True,
+        "judge_temperature": 0.0,
+        "writer_temperature": 0.4,
+        "response_format": "json_object",
+    }
+
+
 def _user_prompt(f: dict) -> str:
     lines = [
         f"阶段：{f.get('phase')}",
@@ -172,6 +188,53 @@ def _user_prompt(f: dict) -> str:
     return "\n".join(lines)
 
 
+def _validate_judge(context: dict, data: dict) -> Optional[dict]:
+    """Accept only diagnoses that preserve the engine-grounded contract."""
+    if not isinstance(data, dict):
+        return None
+    primary = data.get("primary")
+    use_facts = data.get("use_facts")
+    honest_state = data.get("honest_state")
+    avoid = data.get("avoid")
+    if not all(isinstance(value, str) and value.strip()
+               for value in (primary, honest_state, avoid)):
+        return None
+    if honest_state != context.get("resulting_state"):
+        return None
+    if not isinstance(use_facts, list) or len(use_facts) > 2:
+        return None
+    allowed_facts = set(context.get("facts") or [])
+    if any(not isinstance(fact, str) or fact not in allowed_facts
+           for fact in use_facts):
+        return None
+    if len(set(use_facts)) != len(use_facts):
+        return None
+    return {
+        "primary": primary.strip(),
+        "use_facts": use_facts,
+        "honest_state": honest_state,
+        "avoid": avoid.strip(),
+    }
+
+
+def _validate_writer(context: dict, data: dict) -> Optional[dict]:
+    """Validate the bounded JSON contract shared by both writing paths."""
+    del context  # Reserved for semantic checks that need the source facts.
+    required = {"why", "consequence", "what_to_do"}
+    if not isinstance(data, dict) or set(data) != required:
+        return None
+    normalized = {}
+    for key in ("why", "consequence", "what_to_do"):
+        value = data.get(key)
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        if not value or len(value) > 300 or "```" in value:
+            return None
+        normalized[key] = value
+    return normalized
+
+
 @lru_cache(maxsize=512)
 def _polish_cached(payload_json: str) -> Optional[str]:
     client = _client()
@@ -195,11 +258,10 @@ def _polish_cached(payload_json: str) -> Optional[str]:
         data = json.loads(content)
     except (ValueError, TypeError):
         return None
-    if not all(isinstance(data.get(k), str) and data.get(k) for k in
-               ("why", "consequence", "what_to_do")):
+    validated = _validate_writer(facts, data)
+    if validated is None:
         return None
-    return json.dumps({k: data[k] for k in ("why", "consequence", "what_to_do")},
-                      ensure_ascii=False)
+    return json.dumps(validated, ensure_ascii=False)
 
 
 def _judge_block(judge: dict) -> str:
@@ -238,20 +300,10 @@ def _judge_cached(payload_json: str) -> Optional[str]:
         data = json.loads(content)
     except (ValueError, TypeError):
         return None
-    primary = data.get("primary")
-    honest = data.get("honest_state")
-    use_facts = data.get("use_facts")
-    if not isinstance(primary, str) or not primary:
+    validated = _validate_judge(facts, data)
+    if validated is None:
         return None
-    if not isinstance(use_facts, list):
-        use_facts = []
-    norm = {
-        "primary": primary,
-        "use_facts": [x for x in use_facts if isinstance(x, str) and x][:2],
-        "honest_state": honest if isinstance(honest, str) else "",
-        "avoid": data.get("avoid") if isinstance(data.get("avoid"), str) else "",
-    }
-    return json.dumps(norm, ensure_ascii=False, sort_keys=True)
+    return json.dumps(validated, ensure_ascii=False, sort_keys=True)
 
 
 @lru_cache(maxsize=512)
@@ -280,11 +332,10 @@ def _write_cached(payload_json: str, judge_json: str) -> Optional[str]:
         data = json.loads(content)
     except (ValueError, TypeError):
         return None
-    if not all(isinstance(data.get(k), str) and data.get(k) for k in
-               ("why", "consequence", "what_to_do")):
+    validated = _validate_writer(facts, data)
+    if validated is None:
         return None
-    return json.dumps({k: data[k] for k in ("why", "consequence", "what_to_do")},
-                      ensure_ascii=False)
+    return json.dumps(validated, ensure_ascii=False)
 
 
 def polish_explanation(context: dict) -> Optional[dict]:
@@ -310,3 +361,30 @@ def polish_explanation(context: dict) -> Optional[dict]:
         return json.loads(out)
     except (ValueError, TypeError):
         return None
+
+
+def generate_training_explanation(context: dict) -> Optional[dict]:
+    """Generate one verified two-pass example, rejecting every fallback path."""
+    if _client() is None:
+        return None
+    payload = json.dumps(context, ensure_ascii=False, sort_keys=True)
+    judge_json = _judge_cached(payload)
+    if not judge_json:
+        return None
+    writer_json = _write_cached(payload, judge_json)
+    if not writer_json:
+        return None
+    try:
+        judge = json.loads(judge_json)
+        target = json.loads(writer_json)
+    except (ValueError, TypeError):
+        return None
+    return {
+        "judge": judge,
+        "target": target,
+        "verification": {
+            "judge_contract": True,
+            "writer_contract": True,
+            "fail_closed": True,
+        },
+    }

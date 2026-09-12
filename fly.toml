@@ -8,6 +8,11 @@ primary_region = 'sjc'
 
 [build]
   dockerfile = 'Dockerfile'
+
+[[mounts]]
+  source = 'master_data'
+  destination = '/data'
+
 [env]
   # Balanced accuracy/cost: fixed-depth search gives deterministic quality
   # regardless of hardware; one dedicated (unthrottled) core keeps cost low.

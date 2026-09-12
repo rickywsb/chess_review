@@ -113,10 +113,24 @@ class Engine:
         if options:
             self._engine.configure(options)
         self.threads = options.get("Threads", 1)
+        self.hash_mb = options.get("Hash", hash_mb)
 
     def describe(self) -> str:
         budget = f"{self.movetime}ms/move" if self.movetime else f"depth {self.depth}"
         return f"{budget}, {self.threads} threads"
+
+    def metadata(self) -> dict:
+        """Return the engine identity and search settings for data provenance."""
+        identity = getattr(self._engine, "id", {}) or {}
+        return {
+            "name": identity.get("name", ""),
+            "author": identity.get("author", ""),
+            "path": os.path.abspath(self.path),
+            "depth": self.depth,
+            "movetime_ms": self.movetime,
+            "threads": self.threads,
+            "hash_mb": self.hash_mb,
+        }
 
     def _limit(self) -> chess.engine.Limit:
         if self.movetime:

@@ -27,6 +27,8 @@ RECOVERY_THRESHOLD = -100
 PHASE_ZH = {"opening": "开局", "middlegame": "中局", "endgame": "残局"}
 CLASS_ZH = {"blunder": "漏着", "mistake": "错着", "inaccuracy": "不精确",
             "good": "尚可", "best": "最佳"}
+DETECTOR_VERSION = "2026-09-12.1"
+MASTER_MIN_GAMES = 50
 
 
 def _state_zh(cp: int) -> str:
@@ -1133,14 +1135,10 @@ def _move_verdict(m: "MoveAnalysis") -> dict:
     }
 
 
-def _explain_for(m: MoveAnalysis, tag: str) -> dict:
-    """Explanation for a flagged move: LLM-polished when a key is configured,
-    otherwise the deterministic template. Grounded strictly on engine facts."""
-    template = _explain_move_zh(m)
-    if not coach_llm.available():
-        return template
+def build_explanation_context(m: MoveAnalysis, tag: str) -> dict:
+    """Build the shared, engine-grounded input for online and dataset output."""
     verdict = _move_verdict(m)
-    ctx = {
+    return {
         "phase": PHASE_ZH.get(m.phase, m.phase),
         "side": "白方" if m.color == chess.WHITE else "黑方",
         "move_number": m.move_number,
@@ -1164,6 +1162,15 @@ def _explain_for(m: MoveAnalysis, tag: str) -> dict:
         "best_leads_to_mate_in": m.mate_before if (m.mate_before and m.mate_before > 0) else None,
         "facts": _move_facts(m),
     }
+
+
+def _explain_for(m: MoveAnalysis, tag: str) -> dict:
+    """Explanation for a flagged move: LLM-polished when a key is configured,
+    otherwise the deterministic template. Grounded strictly on engine facts."""
+    template = _explain_move_zh(m)
+    if not coach_llm.available():
+        return template
+    ctx = build_explanation_context(m, tag)
     polished = coach_llm.polish_explanation(ctx)
     return polished or template
 
@@ -1382,6 +1389,37 @@ def build_opening_section(ga: GameAnalysis) -> dict:
             "lichess": lichess_url(dev_move.fen_before),
         }
 
+    # Keep empirical master choices separate from engine truth. Use the latest
+    # well-covered opening decision point so the comparison is actionable.
+    master_evidence = None
+    for m in moves:
+        if ga.deviation_ply is not None and m.ply > ga.deviation_ply:
+            break
+        if ga.deviation_ply is None and m.phase != "opening":
+            break
+        context = m.master_context
+        if not context or context.get("total_games", 0) < MASTER_MIN_GAMES:
+            continue
+        choices = context.get("moves") or []
+        if not choices:
+            continue
+        played = next((item for item in choices if item.get("uci") == m.uci), None)
+        master_top = choices[0]
+        master_evidence = {
+            "move_number": m.move_number,
+            "side": "白方" if m.color == chess.WHITE else "黑方",
+            "total_games": context["total_games"],
+            "database_version": context.get("database_version", ""),
+            "played": m.san,
+            "played_games": played.get("games", 0) if played else 0,
+            "played_rate": played.get("play_rate", 0.0) if played else 0.0,
+            "choices": choices[:3],
+            "engine_best": m.best_move_san,
+            "master_top": master_top.get("san", ""),
+            "agrees_with_engine": master_top.get("uci") == m.best_move_uci,
+            "low_sample": context["total_games"] < 200,
+        }
+
     return {
         "eco": ga.eco or "",
         "name": ga.opening_name or "",
@@ -1393,6 +1431,7 @@ def build_opening_section(ga: GameAnalysis) -> dict:
         "anchor_move_number": anchor_move_number,
         "anchor_side": ("白方" if anchor_turn == chess.WHITE else "黑方")
                         if anchor_turn is not None else None,
+        "master_evidence": master_evidence,
     }
 
 
@@ -1541,6 +1580,22 @@ def _md_opening(L: list, sec: dict) -> None:
             line = f"{bc['line']}" if bc.get("line") else f"`{bc['san']}`"
             link = f" · [在 lichess 上打开]({bc['lichess']})" if bc.get("lichess") else ""
             L.append(f"  - {lbl} `{bc['san']}`{pct}：{line}{link}")
+    if sec.get("master_evidence"):
+        master = sec["master_evidence"]
+        sample = "（样本较少，仅供参考）" if master["low_sample"] else ""
+        L.append(f"- **大师实战验证{sample}：** 第 {master['move_number']} 回合"
+                 f"{master['side']}的局面共 {master['total_games']} 盘；实走 "
+                 f"`{master['played']}` 出现 {master['played_games']} 次"
+                 f"（{master['played_rate']:.1f}%）。")
+        labels = ["首选", "次选", "第三选择"]
+        for index, choice in enumerate(master["choices"]):
+            L.append(f"  - 大师{labels[index]} `{choice['san']}`：{choice['games']} 盘"
+                     f"（{choice['play_rate']:.1f}%），白方得分率 "
+                     f"{choice['white_score_pct']:.1f}%。")
+        relation = "一致" if master["agrees_with_engine"] else "不同"
+        L.append(f"  - **与引擎对照：** 大师首选 `{master['master_top']}`，"
+                 f"Stockfish 首选 `{master['engine_best']}`，两者{relation}。"
+                 "热门程度只代表实战经验，不替代引擎评价。")
     L.append("")
 
 

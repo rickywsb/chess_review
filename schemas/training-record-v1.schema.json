@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "chess-review://schemas/training-record/1.0",
+  "title": "Chess Review Training Record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sample_id",
+    "schema_id",
+    "schema_version",
+    "game_id",
+    "split",
+    "source",
+    "provenance",
+    "input",
+    "judge",
+    "target",
+    "verification"
+  ],
+  "properties": {
+    "sample_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "schema_id": {"const": "chess-review://schemas/training-record/1.0"},
+    "schema_version": {"const": "1.0"},
+    "game_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "split": {"enum": ["train", "dev", "test"]},
+    "source": {
+      "type": "object",
+      "required": ["ply", "move_number", "side", "played"],
+      "properties": {
+        "ply": {"type": "integer", "minimum": 1},
+        "move_number": {"type": "integer", "minimum": 1},
+        "side": {"type": "string"},
+        "played": {"type": "string"},
+        "fen_before": {"type": "string"},
+        "fen_after": {"type": "string"},
+        "played_uci": {"type": "string"},
+        "best_move_uci": {"type": "string"},
+        "best_line_san": {"type": "array", "items": {"type": "string"}},
+        "refutation_line_san": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "provenance": {"type": "object"},
+    "input": {"type": "object"},
+    "judge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "use_facts", "honest_state", "avoid"],
+      "properties": {
+        "primary": {"type": "string", "minLength": 1},
+        "use_facts": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"type": "string"}
+        },
+        "honest_state": {"type": "string", "minLength": 1},
+        "avoid": {"type": "string", "minLength": 1}
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["why", "consequence", "what_to_do"],
+      "properties": {
+        "why": {"type": "string", "minLength": 1, "maxLength": 300},
+        "consequence": {"type": "string", "minLength": 1, "maxLength": 300},
+        "what_to_do": {"type": "string", "minLength": 1, "maxLength": 300}
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": [
+        "judge_contract",
+        "writer_contract",
+        "fail_closed",
+        "schema_contract"
+      ],
+      "properties": {
+        "judge_contract": {"const": true},
+        "writer_contract": {"const": true},
+        "fail_closed": {"const": true},
+        "schema_contract": {"const": true}
+      }
+    }
+  }
+}

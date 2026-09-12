@@ -35,13 +35,18 @@ class CloudEngine:
     def describe(self) -> str:
         return f"lichess cloud-eval + local fallback ({self.local.describe()})"
 
-    def analyse(self, board: chess.Board) -> ScoreInfo:
+    def analyse(self, board: chess.Board,
+                multipv: int | None = None) -> ScoreInfo:
+        # Cloud eval is requested with a single PV. MultiPV callers need the
+        # local engine's complete candidate set rather than silent defaults.
+        if multipv is not None and multipv > 1:
+            return self.local.analyse(board, multipv=multipv)
         info = self._cloud(board)
         if info is not None:
             self.hits += 1
             return info
         self.misses += 1
-        return self.local.analyse(board)
+        return self.local.analyse(board, multipv=multipv)
 
     def _cloud(self, board: chess.Board) -> ScoreInfo | None:
         fen = board.fen()

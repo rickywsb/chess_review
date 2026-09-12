@@ -345,6 +345,86 @@ def test_judge_block_formats_diagnosis():
     assert "顺着变化" in _judge_block({"primary": "x"})
 
 
+def test_validate_judge_enforces_grounded_facts_and_state():
+    from chess_review.coach_llm import _validate_judge
+    context = {
+        "facts": ["【位置】王翼漏风", "【选择】这里是唯一解"],
+        "resulting_state": "已处于下风",
+    }
+    valid = {
+        "primary": "王翼漏风",
+        "use_facts": ["【位置】王翼漏风"],
+        "honest_state": "已处于下风",
+        "avoid": "不要夸大为强制杀",
+    }
+    assert _validate_judge(context, valid) == valid
+
+    invented = dict(valid, use_facts=["【战术】遭到不存在的叉子"])
+    assert _validate_judge(context, invented) is None
+
+    reframed = dict(valid, honest_state="已落入败势")
+    assert _validate_judge(context, reframed) is None
+
+    duplicated = dict(valid, use_facts=["【位置】王翼漏风", "【位置】王翼漏风"])
+    assert _validate_judge(context, duplicated) is None
+
+
+def test_validate_writer_enforces_bounded_json_contract():
+    from chess_review.coach_llm import _validate_writer
+    valid = {
+        "why": "这步削弱了王翼。",
+        "consequence": "对手可以沿开放线施压。",
+        "what_to_do": "先检查对手的强制回应。",
+    }
+    assert _validate_writer({}, valid) == valid
+    assert _validate_writer({}, {"why": "x"}) is None
+    assert _validate_writer({}, dict(valid, extra="x")) is None
+    assert _validate_writer({}, dict(valid, why="")) is None
+    assert _validate_writer({}, dict(valid, why="x" * 301)) is None
+    assert _validate_writer({}, dict(valid, why="```json")) is None
+
+
+def test_engine_metadata_records_reproducibility_settings():
+    from chess_review.engine import Engine
+
+    class FakeUciEngine:
+        id = {"name": "Stockfish 16", "author": "the Stockfish developers"}
+
+    engine = Engine.__new__(Engine)
+    engine._engine = FakeUciEngine()
+    engine.path = "/usr/local/bin/stockfish"
+    engine.depth = 18
+    engine.movetime = None
+    engine.threads = 1
+    engine.hash_mb = 1024
+    metadata = engine.metadata()
+    assert metadata["name"] == "Stockfish 16"
+    assert metadata["depth"] == 18
+    assert metadata["threads"] == 1
+    assert metadata["hash_mb"] == 1024
+
+
+def test_cloud_engine_routes_multipv_to_local_engine():
+    from chess_review.cloud import CloudEngine
+
+    class FakeLocal:
+        movetime = None
+        depth = 18
+        threads = 1
+
+        def __init__(self):
+            self.calls = []
+
+        def analyse(self, board, multipv=None):
+            self.calls.append(multipv)
+            return "local-result"
+
+    local = FakeLocal()
+    cloud = CloudEngine(local)
+    assert cloud.analyse(chess.Board(), multipv=3) == "local-result"
+    assert local.calls == [3]
+
+
 def test_rate_limiter_blocks_after_max():
     from chess_review.webapp import _RateLimiter
     lim = _RateLimiter(max_hits=2, window_s=100)

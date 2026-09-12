@@ -157,6 +157,25 @@
           </ul>
         </li>
       {% endif %}
+      {% if sec.master_evidence %}
+        {% set master = sec.master_evidence %}
+        <li><b>大师实战验证{% if master.low_sample %}（样本较少，仅供参考）{% endif %}：</b>
+          第 {{ master.move_number }} 回合{{ master.side }}的局面共 {{ master.total_games }} 盘；
+          实走 <span class="played">{{ master.played }}</span> 出现 {{ master.played_games }} 次
+          （{{ '%.1f' | format(master.played_rate) }}%）。
+          <ul>
+          {% for choice in master.choices %}
+            <li>{{ '首选' if loop.index0 == 0 else ('次选' if loop.index0 == 1 else '第三选择') }}
+              <span class="best">{{ choice.san }}</span>：{{ choice.games }} 盘
+              （{{ '%.1f' | format(choice.play_rate) }}%），白方得分率
+              {{ '%.1f' | format(choice.white_score_pct) }}%。</li>
+          {% endfor %}
+            <li><b>与引擎对照：</b>大师首选 <span class="best">{{ master.master_top }}</span>，
+              Stockfish 首选 <span class="best">{{ master.engine_best }}</span>，两者{{ '一致' if master.agrees_with_engine else '不同' }}。
+              热门程度只代表实战经验，不替代引擎评价。</li>
+          </ul>
+        </li>
+      {% endif %}
     </ul>
   </div>
   {% endmacro %}

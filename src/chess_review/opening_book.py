@@ -34,6 +34,7 @@ class OpeningBook:
         self._endpoints: dict[str, tuple[str, str]] = {}  # epd -> (eco, name)
         self._children: dict[str, set[str]] = {}   # epd -> {san continuations}
         self.loaded = False
+        self.path: Optional[str] = None
 
     # ---- loading ------------------------------------------------------------
     @classmethod
@@ -41,6 +42,7 @@ class OpeningBook:
         book = cls()
         if path is None:
             path = os.path.join(os.path.dirname(__file__), "data", "openings.tsv")
+        book.path = os.path.abspath(path)
         if not os.path.exists(path):
             return book  # empty book -> deviation detection disabled
         with open(path, encoding="utf-8") as fh:

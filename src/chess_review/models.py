@@ -52,6 +52,9 @@ class MoveAnalysis:
     # only-move position apart from one with several equally good choices.
     alt_gap_cp: int = 0
     alt_count: int = 1
+    # Optional high-level opening evidence from a local master-game database.
+    # Kept as a plain snapshot so reports do not depend on an open SQLite handle.
+    master_context: Optional[dict] = None
 
     @property
     def is_blunder(self) -> bool:

@@ -18,6 +18,10 @@ src/chess_review/data/engines/
 # Downloaded opening book (regenerate with `chess-review setup`)
 src/chess_review/data/openings.tsv
 
+# Generated local master opening databases
+data/*.sqlite
+data/*.sqlite-*
+
 .DS_Store
 .pytest_cache/
 
