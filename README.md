@@ -76,7 +76,7 @@ chess-review web
 
 Local loopback access works without credentials. Before exposing the workspace
 remotely, set a strong `CHESS_REVIEW_COACH_TOKEN`; `/coach` and its API then use
-HTTP Basic authentication (any username, token as the password). A remote
+HTTP Basic authentication (`coach` as the username, token as the password). A remote
 request is rejected when the token is absent. On Fly.io, keep the history
 database on the mounted volume and configure authentication before deployment:
 

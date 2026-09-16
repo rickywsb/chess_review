@@ -143,13 +143,22 @@ def _coach_authorized() -> bool:
     token = os.environ.get("CHESS_REVIEW_COACH_TOKEN")
     if token:
         auth = request.authorization
-        return bool(auth and hmac.compare_digest(auth.password or "", token))
+        return bool(
+            auth
+            and hmac.compare_digest(auth.username or "", "coach")
+            and hmac.compare_digest(auth.password or "", token)
+        )
     forwarded = request.headers.get("Fly-Client-IP") or request.headers.get(
         "X-Forwarded-For")
     return not forwarded and request.remote_addr in ("127.0.0.1", "::1")
 
 
 def _coach_unauthorized() -> Response:
+    if not os.environ.get("CHESS_REVIEW_COACH_TOKEN"):
+        return Response(
+            "Coach access is not configured.", 503,
+            {"Retry-After": "300"},
+        )
     return Response(
         "Coach access requires authentication.", 401,
         {"WWW-Authenticate": 'Basic realm="Chess Review Coach"'},

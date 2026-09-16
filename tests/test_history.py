@@ -334,8 +334,19 @@ def test_coach_dashboard_routes_are_read_only_and_remote_protected(
     assert client.get("/api/coach/students/missing").status_code == 404
 
     remote = {"REMOTE_ADDR": "10.0.0.2", "HTTP_FLY_CLIENT_IP": "203.0.113.8"}
-    assert client.get("/coach", environ_overrides=remote).status_code == 401
+    response = client.get("/coach", environ_overrides=remote)
+    assert response.status_code == 503
+    assert "WWW-Authenticate" not in response.headers
     monkeypatch.setenv("CHESS_REVIEW_COACH_TOKEN", "test-secret")
+    response = client.get("/coach", environ_overrides=remote)
+    assert response.status_code == 401
+    assert response.headers["WWW-Authenticate"].startswith("Basic ")
+    wrong_user = base64.b64encode(b"admin:test-secret").decode("ascii")
+    response = client.get(
+        "/coach", environ_overrides=remote,
+        headers={"Authorization": f"Basic {wrong_user}"},
+    )
+    assert response.status_code == 401
     credentials = base64.b64encode(b"coach:test-secret").decode("ascii")
     response = client.get(
         "/coach", environ_overrides=remote,
