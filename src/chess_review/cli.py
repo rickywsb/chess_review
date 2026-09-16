@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import json
 import os
+import sqlite3
 import sys
 from typing import Iterator
 
@@ -21,6 +23,12 @@ from .dataset import (
     write_jsonl,
 )
 from .engine import Engine
+from .history import (
+    DEFAULT_HISTORY_DB,
+    HistoryDataError,
+    PlayerHistoryStore,
+    analysis_profile,
+)
 from .metrics import build_player_report
 from .master_db import MasterOpeningDatabase, build_master_database
 from .opening_book import OpeningBook
@@ -32,6 +40,7 @@ from .render import (
     render_player_html,
     render_player_markdown,
 )
+from .sources import SourceSyncError, sync_external_account
 
 
 def _slug(text: str) -> str:
@@ -173,6 +182,139 @@ def cmd_report(args: argparse.Namespace) -> int:
     if report.get("error"):
         print(report["error"], file=sys.stderr)
         return 1
+    return 0
+
+
+def cmd_history_ingest(args: argparse.Namespace) -> int:
+    seen = 0
+    inserted = 0
+    with PlayerHistoryStore(args.db) as store:
+        for game in _iter_games(args.pgn):
+            seen += 1
+            _, was_inserted = store.ingest(game)
+            inserted += int(was_inserted)
+    if not seen:
+        print("No games found.", file=sys.stderr)
+        return 1
+    print(f"history: {inserted} new, {seen - inserted} duplicates, {seen} seen")
+    print(f"database: {os.path.abspath(args.db)}")
+    return 0
+
+
+def cmd_history_analyze(args: argparse.Namespace) -> int:
+    book = OpeningBook.load()
+    with PlayerHistoryStore(args.db) as store:
+        stored_games = list(store.player_games(args.player))
+        if args.limit:
+            stored_games = stored_games[:args.limit]
+        if not stored_games:
+            print(f"No stored games found for '{args.player}'.", file=sys.stderr)
+            return 1
+
+        with ExitStack() as stack:
+            engine = stack.enter_context(Engine(
+                path=args.engine, depth=args.depth, threads=args.threads,
+                hash_mb=args.hash_mb, movetime=args.movetime))
+            master_db = (stack.enter_context(MasterOpeningDatabase(args.master_db))
+                         if args.master_db else None)
+            profile = analysis_profile(
+                engine.metadata(), book,
+                master_db.identity() if master_db is not None else None,
+            )
+            profile_id = store.register_profile(profile)
+            cached = 0
+            analyzed = 0
+            for index, (game_id, game) in enumerate(stored_games, 1):
+                if store.has_analysis(game_id, profile_id):
+                    cached += 1
+                    continue
+                print(f"\r  game {index}/{len(stored_games)}", end="", flush=True)
+                result = analyze_game(game, engine, book=book, master_db=master_db)
+                store.save_analysis(game_id, profile_id, result)
+                analyzed += 1
+            if analyzed:
+                print()
+    print(f"profile: {profile_id}")
+    print(f"analysis: {analyzed} new, {cached} cached")
+    return 0
+
+
+def cmd_history_report(args: argparse.Namespace) -> int:
+    with PlayerHistoryStore(args.db) as store:
+        profile_id = args.profile or store.latest_profile_id(args.player)
+        if profile_id is None:
+            print(f"No cached analyses found for '{args.player}'.", file=sys.stderr)
+            return 1
+        analyses = store.load_player_analyses(args.player, profile_id)
+    if not analyses:
+        print(f"No analyses found for profile {profile_id}.", file=sys.stderr)
+        return 1
+    report = build_player_report(analyses, args.player)
+    formats = [item.strip() for item in args.format.split(",") if item.strip()]
+    written = _write(
+        args.out,
+        _slug(args.player) + "-history-report",
+        formats,
+        render_player_markdown(report),
+        render_player_html(report),
+    )
+    print(f"profile: {profile_id}")
+    print(f"games: {len(analyses)}")
+    for path in written:
+        print(f"wrote {path}")
+    return 0
+
+
+def cmd_history_info(args: argparse.Namespace) -> int:
+    with PlayerHistoryStore(args.db) as store:
+        info = store.info(args.player)
+    print(json.dumps(info, ensure_ascii=False, sort_keys=True, indent=2))
+    return 0
+
+
+def cmd_history_person_add(args: argparse.Namespace) -> int:
+    with PlayerHistoryStore(args.db) as store:
+        person_id = store.create_person(args.name, tuple(args.alias))
+        person = next(item for item in store.people()
+                      if item["person_id"] == person_id)
+    print(json.dumps(person, ensure_ascii=False, sort_keys=True, indent=2))
+    return 0
+
+
+def cmd_history_person_list(args: argparse.Namespace) -> int:
+    with PlayerHistoryStore(args.db) as store:
+        people = store.people()
+    print(json.dumps({"people": people}, ensure_ascii=False,
+                     sort_keys=True, indent=2))
+    return 0
+
+
+def cmd_history_account_add(args: argparse.Namespace) -> int:
+    external_id = args.external_id or args.username
+    if not external_id:
+        raise ValueError("--external-id or --username is required")
+    with PlayerHistoryStore(args.db) as store:
+        account_id = store.add_external_account(
+            args.person, args.source, external_id,
+            username=args.username, profile_url=args.profile_url,
+        )
+    print(json.dumps({"account_id": account_id, "person_id": args.person,
+                      "source": args.source}, ensure_ascii=False,
+                     sort_keys=True, indent=2))
+    return 0
+
+
+def cmd_history_sync(args: argparse.Namespace) -> int:
+    user_agent = args.user_agent or os.environ.get(
+        "CHESS_REVIEW_USER_AGENT", "chess-review/0.1")
+    with PlayerHistoryStore(args.db) as store:
+        result = sync_external_account(
+            store, args.account, user_agent=user_agent,
+            lichess_token=os.environ.get("LICHESS_TOKEN"),
+            timeout=args.timeout,
+        )
+    print(json.dumps(result.as_dict(), ensure_ascii=False,
+                     sort_keys=True, indent=2))
     return 0
 
 
@@ -367,6 +509,96 @@ def build_parser() -> argparse.ArgumentParser:
     add_engine_opts(sp_rep)
     sp_rep.set_defaults(func=cmd_report)
 
+    sp_history = sub.add_parser(
+        "history", help="Persist games and incrementally cache player analyses.")
+    history_sub = sp_history.add_subparsers(dest="history_command", required=True)
+
+    sp_history_ingest = history_sub.add_parser(
+        "ingest", help="Import PGN games into the player history database.")
+    sp_history_ingest.add_argument("pgn", nargs="+", help="One or more PGN files.")
+    sp_history_ingest.add_argument("--db", default=DEFAULT_HISTORY_DB,
+                                   help=f"History SQLite path (default {DEFAULT_HISTORY_DB}).")
+    sp_history_ingest.set_defaults(func=cmd_history_ingest)
+
+    sp_history_analyze = history_sub.add_parser(
+        "analyze", help="Analyze only games missing from the current cache profile.")
+    sp_history_analyze.add_argument("--db", default=DEFAULT_HISTORY_DB)
+    sp_history_analyze.add_argument("--player", required=True,
+                                    help="Exact player name, matched case-insensitively.")
+    sp_history_analyze.add_argument("--limit", type=_positive_int)
+    sp_history_analyze.add_argument("--engine", help="Path to Stockfish.")
+    sp_history_analyze.add_argument("--depth", type=_positive_int, default=18)
+    sp_history_analyze.add_argument("--movetime", type=_positive_int, default=None,
+                                    help="Milliseconds per position; overrides depth.")
+    sp_history_analyze.add_argument("--threads", type=_positive_int, default=1)
+    sp_history_analyze.add_argument("--hash-mb", type=_positive_int, default=1024)
+    sp_history_analyze.add_argument(
+        "--master-db", default=os.environ.get("CHESS_REVIEW_MASTER_DB"),
+        help="Optional local SQLite master opening database.")
+    sp_history_analyze.set_defaults(func=cmd_history_analyze)
+
+    sp_history_report = history_sub.add_parser(
+        "report", help="Render a report from cached analyses without Stockfish.")
+    sp_history_report.add_argument("--db", default=DEFAULT_HISTORY_DB)
+    sp_history_report.add_argument("--player", required=True)
+    sp_history_report.add_argument("--profile",
+                                   help="Analysis profile ID (default: latest for player).")
+    sp_history_report.add_argument("--out", default="reports")
+    sp_history_report.add_argument("--format", default="md,html")
+    sp_history_report.set_defaults(func=cmd_history_report)
+
+    sp_history_info = history_sub.add_parser(
+        "info", help="Show cached game, analysis, and profile counts.")
+    sp_history_info.add_argument("--db", default=DEFAULT_HISTORY_DB)
+    sp_history_info.add_argument("--player")
+    sp_history_info.set_defaults(func=cmd_history_info)
+
+    sp_history_person = history_sub.add_parser(
+        "person", help="Manage canonical student and opponent identities.")
+    person_sub = sp_history_person.add_subparsers(
+        dest="person_command", required=True)
+    sp_history_person_add = person_sub.add_parser(
+        "add", help="Create a person and reserve exact PGN name aliases.")
+    sp_history_person_add.add_argument("--db", default=DEFAULT_HISTORY_DB)
+    sp_history_person_add.add_argument("--name", required=True)
+    sp_history_person_add.add_argument(
+        "--alias", action="append", default=[],
+        help="Additional exact PGN name; repeat for multiple aliases.")
+    sp_history_person_add.set_defaults(func=cmd_history_person_add)
+    sp_history_person_list = person_sub.add_parser(
+        "list", help="List people, aliases, and external accounts.")
+    sp_history_person_list.add_argument("--db", default=DEFAULT_HISTORY_DB)
+    sp_history_person_list.set_defaults(func=cmd_history_person_list)
+
+    sp_history_account = history_sub.add_parser(
+        "account", help="Bind public platform or federation identities.")
+    account_sub = sp_history_account.add_subparsers(
+        dest="account_command", required=True)
+    sp_history_account_add = account_sub.add_parser(
+        "add", help="Bind an external account to a canonical person.")
+    sp_history_account_add.add_argument("--db", default=DEFAULT_HISTORY_DB)
+    sp_history_account_add.add_argument("--person", required=True,
+                                        help="Canonical person ID.")
+    sp_history_account_add.add_argument(
+        "--source", required=True,
+        help="Source key such as lichess, chess.com, fide, or 365chess.")
+    sp_history_account_add.add_argument(
+        "--external-id", help="Stable provider ID; defaults to username.")
+    sp_history_account_add.add_argument("--username")
+    sp_history_account_add.add_argument("--profile-url")
+    sp_history_account_add.set_defaults(func=cmd_history_account_add)
+
+    sp_history_sync = history_sub.add_parser(
+        "sync", help="Fetch new games from a registered public account.")
+    sp_history_sync.add_argument("--db", default=DEFAULT_HISTORY_DB)
+    sp_history_sync.add_argument("--account", required=True,
+                                 help="External account ID from account add.")
+    sp_history_sync.add_argument(
+        "--user-agent",
+        help="Recognizable API User-Agent; defaults to CHESS_REVIEW_USER_AGENT.")
+    sp_history_sync.add_argument("--timeout", type=_positive_int, default=60)
+    sp_history_sync.set_defaults(func=cmd_history_sync)
+
     sp_data = sub.add_parser(
         "dataset", help="Export verified training examples as versioned JSONL.")
     sp_data.add_argument("pgn", nargs="+", help="One or more PGN files.")
@@ -429,7 +661,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except (HistoryDataError, SourceSyncError, sqlite3.DatabaseError,
+            OSError, ValueError) as exc:
+        if args.command != "history":
+            raise
+        print(f"history failed: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

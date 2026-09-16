@@ -73,6 +73,59 @@ chess-review report 2025/*.pgn --player "Test Player" --depth 16
 
 Outputs `reports/<player>-report.md` and `.html`.
 
+For an ongoing player archive, use the versioned history database instead of
+re-running every PGN whenever new games arrive:
+
+```bash
+# Create one canonical person. Keep the returned person_id.
+chess-review history person add --name "Sibo Wu" \
+  --alias "Wu, Sibo" \
+  --db data/player-history.sqlite
+
+# Bind official public accounts. Use a provider's stable ID when available.
+chess-review history account add --person person_<id> \
+  --source lichess --username <lichess_username> \
+  --db data/player-history.sqlite
+chess-review history account add --person person_<id> \
+  --source chess.com --external-id <chess.com_player_id> \
+  --username <chess.com_username> \
+  --db data/player-history.sqlite
+
+# Keep the returned account_id, then fetch only new or changed archives.
+export CHESS_REVIEW_USER_AGENT="chess-review/0.1 (coach@example.com)"
+chess-review history sync --account <account_id> \
+  --db data/player-history.sqlite
+
+# Import is cheap and idempotent: repeated PGNs are deduplicated.
+chess-review history ingest games/2026-*.pgn \
+  --db data/player-history.sqlite
+
+# Only games missing from this exact engine/book/database profile are analyzed.
+chess-review history analyze --player "Test Player" \
+  --db data/player-history.sqlite \
+  --depth 18 --threads 1 \
+  --master-db data/master-openings.sqlite
+
+# Rendering a cached report does not start Stockfish.
+chess-review history report --player "Test Player" \
+  --db data/player-history.sqlite \
+  --out reports
+
+chess-review history info --player "Test Player" \
+  --db data/player-history.sqlite
+```
+
+The cache profile records the Stockfish binary and search settings,
+`python-chess` version, analysis source hashes, opening-book hashes, and master
+database identity. Changing any of them creates a separate profile, so reports
+never silently mix results produced at different depths or by different engine
+versions. Canonical people can reserve multiple exact, case-insensitive PGN
+aliases and bind multiple public accounts. Lichess sync uses a timestamp cursor;
+Chess.com sync uses monthly archives and ETags. Set `LICHESS_TOKEN` only when a
+Lichess account or endpoint requires authentication; tokens are never accepted
+as command-line arguments. Sources without an official public game API, such as
+365Chess, can be retained as profile references but are not scraped.
+
 ## Versioned training dataset
 
 Export engine-grounded, two-pass teacher examples for later fine-tuning:
