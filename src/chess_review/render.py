@@ -1701,6 +1701,40 @@ def render_player_markdown(r: dict) -> str:
              f"{r['mistakes_total']} mistakes")
     L.append("")
 
+    progress = r.get("progress", {})
+    L.append("## Progress trend")
+    if progress.get("status") == "insufficient_data":
+        L.append(f"Insufficient comparable history: {progress.get('available_games', 0)} games "
+                 f"available; at least {progress.get('required_games', 20)} are required.")
+    else:
+        L.append(f"Overall **{progress['status']}** · confidence {progress['confidence']} · "
+                 f"previous {progress['window_games']} vs recent {progress['window_games']} games")
+        L.append(f"Baseline {progress['baseline']['first_date']}–{progress['baseline']['last_date']} · "
+             f"recent {progress['recent']['first_date']}–{progress['recent']['last_date']}")
+        L.append("")
+        L.append("| Metric | Previous | Recent | Change | Direction |")
+        L.append("|---|---:|---:|---:|---|")
+        labels = {
+            "acpl_median": "Median ACPL",
+            "blunders_per_100": "Blunders / 100 moves",
+            "clean_game_rate": "Clean-game rate",
+            "score_pct": "Score rate",
+            "conversion_win_rate": "Winning conversion",
+        }
+        percentage_metrics = {"clean_game_rate", "score_pct", "conversion_win_rate"}
+        for key, label in labels.items():
+            metric = progress["metrics"][key]
+            before, after, change = metric["before"], metric["after"], metric["change"]
+            if before is None or after is None:
+                values = ("—", "—", "—")
+            elif key in percentage_metrics:
+                values = (_pct(before), _pct(after), f"{change * 100:+.1f} pp")
+            else:
+                values = (str(before), str(after), f"{change:+.1f}")
+            L.append(f"| {label} | {values[0]} | {values[1]} | {values[2]} | "
+                     f"{metric['status']} |")
+    L.append("")
+
     L.append("## Where points are lost (by phase)")
     L.append("| Phase | Moves | Avg loss | Blunder % | Mistake % |")
     L.append("|---|---:|---:|---:|---:|")

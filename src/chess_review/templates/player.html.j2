@@ -17,6 +17,8 @@
   .kpi { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; }
   .kpi .big { font-size: 24px; font-weight: 800; }
   .kpi .lbl { font-size: 12px; color: var(--muted); }
+  .trend { margin:20px 0; padding:14px 16px; border-left:4px solid #1565c0; background:#fff; }
+  .trend strong { text-transform:capitalize; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; background:#fff;
           border:1px solid var(--line); border-radius: 8px; overflow: hidden; }
   th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
@@ -46,6 +48,42 @@
     <div class="kpi"><div class="big">{{ r.resilience.save_rate | pct }}</div><div class="lbl">save rate when losing</div></div>
     <div class="kpi"><div class="big">{{ r.blunders_total }}</div><div class="lbl">total blunders</div></div>
   </div>
+
+  <h2>Progress trend</h2>
+  {% if r.progress.status == "insufficient_data" %}
+    <div class="trend">Insufficient comparable history: {{ r.progress.available_games }} games available;
+      at least {{ r.progress.required_games }} are required.</div>
+  {% else %}
+    <div class="trend"><strong>{{ r.progress.status }}</strong> · confidence {{ r.progress.confidence }} ·
+      previous {{ r.progress.window_games }} vs recent {{ r.progress.window_games }} games<br>
+      <span class="meta">Baseline {{ r.progress.baseline.first_date }}–{{ r.progress.baseline.last_date }} ·
+        recent {{ r.progress.recent.first_date }}–{{ r.progress.recent.last_date }}</span></div>
+    <table>
+      <tr><th>Metric</th><th class="num">Previous</th><th class="num">Recent</th>
+          <th class="num">Change</th><th>Direction</th></tr>
+      {% set labels = {
+        "acpl_median": "Median ACPL",
+        "blunders_per_100": "Blunders / 100 moves",
+        "clean_game_rate": "Clean-game rate",
+        "score_pct": "Score rate",
+        "conversion_win_rate": "Winning conversion"
+      } %}
+      {% for key, label in labels.items() %}
+        {% set metric = r.progress.metrics[key] %}
+        <tr><td>{{ label }}</td>
+          {% if metric.before is none or metric.after is none %}
+            <td class="num">—</td><td class="num">—</td><td class="num">—</td>
+          {% elif key in ["clean_game_rate", "score_pct", "conversion_win_rate"] %}
+            <td class="num">{{ metric.before | pct }}</td><td class="num">{{ metric.after | pct }}</td>
+            <td class="num">{{ "%+.1f" | format(metric.change * 100) }} pp</td>
+          {% else %}
+            <td class="num">{{ metric.before }}</td><td class="num">{{ metric.after }}</td>
+            <td class="num">{{ "%+.1f" | format(metric.change) }}</td>
+          {% endif %}
+          <td>{{ metric.status }}</td></tr>
+      {% endfor %}
+    </table>
+  {% endif %}
 
   <h2>Where points are lost (by phase)</h2>
   <table>

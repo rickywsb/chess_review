@@ -204,11 +204,19 @@ def cmd_history_ingest(args: argparse.Namespace) -> int:
 def cmd_history_analyze(args: argparse.Namespace) -> int:
     book = OpeningBook.load()
     with PlayerHistoryStore(args.db) as store:
-        stored_games = list(store.player_games(args.player))
+        person_id = getattr(args, "person_id", None)
+        player = getattr(args, "player", None)
+        if person_id:
+            identity = store.person_identity(person_id)
+            target = identity["display_name"]
+            stored_games = list(store.person_games(person_id))
+        else:
+            target = player
+            stored_games = list(store.player_games(player))
         if args.limit:
             stored_games = stored_games[:args.limit]
         if not stored_games:
-            print(f"No stored games found for '{args.player}'.", file=sys.stderr)
+            print(f"No stored games found for '{target}'.", file=sys.stderr)
             return 1
 
         with ExitStack() as stack:
@@ -241,19 +249,30 @@ def cmd_history_analyze(args: argparse.Namespace) -> int:
 
 def cmd_history_report(args: argparse.Namespace) -> int:
     with PlayerHistoryStore(args.db) as store:
-        profile_id = args.profile or store.latest_profile_id(args.player)
+        person_id = getattr(args, "person_id", None)
+        player = getattr(args, "player", None)
+        if person_id:
+            identity = store.person_identity(person_id)
+            target = identity["display_name"]
+            aliases = identity["aliases"]
+            profile_id = args.profile or store.latest_person_profile_id(person_id)
+        else:
+            target = player
+            aliases = None
+            profile_id = args.profile or store.latest_profile_id(player)
         if profile_id is None:
-            print(f"No cached analyses found for '{args.player}'.", file=sys.stderr)
+            print(f"No cached analyses found for '{target}'.", file=sys.stderr)
             return 1
-        analyses = store.load_player_analyses(args.player, profile_id)
+        analyses = (store.load_person_analyses(person_id, profile_id)
+                    if person_id else store.load_player_analyses(player, profile_id))
     if not analyses:
         print(f"No analyses found for profile {profile_id}.", file=sys.stderr)
         return 1
-    report = build_player_report(analyses, args.player)
+    report = build_player_report(analyses, target, aliases=aliases)
     formats = [item.strip() for item in args.format.split(",") if item.strip()]
     written = _write(
         args.out,
-        _slug(args.player) + "-history-report",
+        _slug(target) + "-history-report",
         formats,
         render_player_markdown(report),
         render_player_html(report),
@@ -523,8 +542,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp_history_analyze = history_sub.add_parser(
         "analyze", help="Analyze only games missing from the current cache profile.")
     sp_history_analyze.add_argument("--db", default=DEFAULT_HISTORY_DB)
-    sp_history_analyze.add_argument("--player", required=True,
-                                    help="Exact player name, matched case-insensitively.")
+    analyze_target = sp_history_analyze.add_mutually_exclusive_group(required=True)
+    analyze_target.add_argument(
+        "--player", help="Exact player name, matched case-insensitively.")
+    analyze_target.add_argument(
+        "--person-id", help="Canonical person ID; includes all registered aliases.")
     sp_history_analyze.add_argument("--limit", type=_positive_int)
     sp_history_analyze.add_argument("--engine", help="Path to Stockfish.")
     sp_history_analyze.add_argument("--depth", type=_positive_int, default=18)
@@ -540,7 +562,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp_history_report = history_sub.add_parser(
         "report", help="Render a report from cached analyses without Stockfish.")
     sp_history_report.add_argument("--db", default=DEFAULT_HISTORY_DB)
-    sp_history_report.add_argument("--player", required=True)
+    report_target = sp_history_report.add_mutually_exclusive_group(required=True)
+    report_target.add_argument("--player")
+    report_target.add_argument(
+        "--person-id", help="Canonical person ID; includes all registered aliases.")
     sp_history_report.add_argument("--profile",
                                    help="Analysis profile ID (default: latest for player).")
     sp_history_report.add_argument("--out", default="reports")

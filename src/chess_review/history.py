@@ -416,6 +416,23 @@ class PlayerHistoryStore:
             "metadata": json.loads(row[6]),
         }
 
+    def person_identity(self, person_id: str) -> dict:
+        row = self._connection.execute("""
+            SELECT display_name FROM people WHERE person_id=?
+        """, (person_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown person: {person_id}")
+        aliases = [item[0] for item in self._connection.execute("""
+            SELECT alias FROM person_aliases
+            WHERE person_id=?
+            ORDER BY CASE WHEN alias_key=? THEN 0 ELSE 1 END, alias_key
+        """, (person_id, _normalize_player(row[0])))]
+        return {
+            "person_id": person_id,
+            "display_name": row[0],
+            "aliases": aliases,
+        }
+
     def save_sync_state(self, account_id: str, cursor: dict,
                         etag: Optional[str] = None,
                         last_modified: Optional[str] = None,
@@ -591,6 +608,24 @@ class PlayerHistoryStore:
                     f"Invalid cached analysis for game {game_id}") from exc
         return analyses
 
+    def load_person_analyses(self, person_id: str,
+                             profile_id: str) -> list[GameAnalysis]:
+        rows = self._connection.execute("""
+            SELECT ga.game_id, ga.analysis FROM game_analyses ga
+            JOIN game_participants gp ON gp.game_id=ga.game_id
+            JOIN games g ON g.game_id=ga.game_id
+            WHERE ga.profile_id=? AND gp.person_id=?
+            ORDER BY g.played_date, g.game_id
+        """, (profile_id, person_id))
+        analyses = []
+        for game_id, payload in rows:
+            try:
+                analyses.append(_deserialize_analysis(payload))
+            except HistoryDataError as exc:
+                raise HistoryDataError(
+                    f"Invalid cached analysis for game {game_id}") from exc
+        return analyses
+
     def latest_profile_id(self, player: str) -> Optional[str]:
         player_key = _normalize_player(player)
         row = self._connection.execute("""
@@ -602,6 +637,18 @@ class PlayerHistoryStore:
             ORDER BY latest DESC
             LIMIT 1
         """, (player_key, player_key)).fetchone()
+        return row[0] if row else None
+
+    def latest_person_profile_id(self, person_id: str) -> Optional[str]:
+        row = self._connection.execute("""
+            SELECT ga.profile_id, MAX(ga.analyzed_at) AS latest
+            FROM game_analyses ga
+            JOIN game_participants gp ON gp.game_id=ga.game_id
+            WHERE gp.person_id=?
+            GROUP BY ga.profile_id
+            ORDER BY latest DESC
+            LIMIT 1
+        """, (person_id,)).fetchone()
         return row[0] if row else None
 
     def info(self, player: Optional[str] = None) -> dict:

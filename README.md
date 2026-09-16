@@ -101,13 +101,14 @@ chess-review history ingest games/2026-*.pgn \
   --db data/player-history.sqlite
 
 # Only games missing from this exact engine/book/database profile are analyzed.
-chess-review history analyze --player "Test Player" \
+# person-id includes every registered PGN alias for the student.
+chess-review history analyze --person-id person_<id> \
   --db data/player-history.sqlite \
   --depth 18 --threads 1 \
   --master-db data/master-openings.sqlite
 
 # Rendering a cached report does not start Stockfish.
-chess-review history report --player "Test Player" \
+chess-review history report --person-id person_<id> \
   --db data/player-history.sqlite \
   --out reports
 
@@ -125,6 +126,13 @@ Chess.com sync uses monthly archives and ETags. Set `LICHESS_TOKEN` only when a
 Lichess account or endpoint requires authentication; tokens are never accepted
 as command-line arguments. Sources without an official public game API, such as
 365Chess, can be retained as profile references but are not scraped.
+
+History reports compare equal chronological windows when at least 20 dated games
+are available: 10 vs 10 initially, growing to 20 vs 20. The report labels the
+overall direction and each metric as improving, stable, declining, mixed, or
+insufficient, with sample size and confidence. Undated games remain in lifetime
+totals but are excluded from trend windows. Legacy `--player` commands remain
+available for archives that have not yet created canonical people.
 
 ## Versioned training dataset
 

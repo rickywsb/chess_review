@@ -28,21 +28,22 @@ def _game(white="Alice", black="Bob", site="game-1"):
     ))
 
 
-def _analysis():
+def _analysis(white="Alice", black="Bob", date="2026.09.13", site="game-1",
+              cp_loss=5):
     move = MoveAnalysis(
         ply=1, move_number=1, color=chess.WHITE, san="e4", uci="e2e4",
         fen_before=chess.STARTING_FEN,
         fen_after="rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
         eval_before_mover=20, eval_after_mover=15,
-        eval_before_white=20, eval_after_white=15, cp_loss=5,
+        eval_before_white=20, eval_after_white=15, cp_loss=cp_loss,
         best_move_uci="e2e4", best_move_san="e4", phase="opening",
         classification="best", best_is_capture=False, best_is_check=False,
         played_is_capture=False, in_book=True,
         best_line_san=["e4", "e5"], master_context={"total_games": 100},
     )
     return GameAnalysis(
-        white="Alice", black="Bob", result="1-0", date="2026.09.13",
-        event="Test", site="game-1", headers={"WhiteElo": "2100"},
+        white=white, black=black, result="1-0", date=date,
+        event="Test", site=site, headers={"WhiteElo": "2100"},
         eco="C20", opening_name="King's Pawn Game", moves=[move],
         final_eval_white=15,
     )
@@ -162,8 +163,14 @@ def test_history_parser_defaults():
     analyze = parser.parse_args(["history", "analyze", "--player", "Alice"])
     assert analyze.depth == 18
     assert analyze.threads == 1
+    analyze_person = parser.parse_args([
+        "history", "analyze", "--person-id", "person-1"])
+    assert analyze_person.person_id == "person-1"
     report = parser.parse_args(["history", "report", "--player", "Alice"])
     assert report.profile is None
+    report_person = parser.parse_args([
+        "history", "report", "--person-id", "person-1"])
+    assert report_person.person_id == "person-1"
     person = parser.parse_args(["history", "person", "add", "--name", "Alice"])
     assert person.alias == []
     account = parser.parse_args([
@@ -209,6 +216,83 @@ def test_person_identity_links_aliases_accounts_games_and_sync_state(tmp_path):
         assert person["accounts"][0]["metadata"] == {"title": "FM"}
         with pytest.raises(ValueError, match="alias is already assigned"):
             store.create_person("Wu, Sibo")
+
+
+def test_person_report_combines_exact_aliases_without_substring_matches(tmp_path):
+    from chess_review.metrics import build_player_report
+
+    database = tmp_path / "history.sqlite"
+    with PlayerHistoryStore(str(database)) as store:
+        first_game_id, _ = store.ingest(_game(white="Alice", site="game-1"))
+        second_game_id, _ = store.ingest(
+            _game(white="Carol", black="AliceOnline", site="game-2"))
+        store.ingest(_game(white="Malice", black="Dan", site="game-3"))
+        person_id = store.create_person("Alice", ("AliceOnline",))
+        identity = store.person_identity(person_id)
+        assert len(list(store.person_games(person_id))) == 2
+
+        profile_id = store.register_profile({"engine": {"depth": 18}})
+        store.save_analysis(first_game_id, profile_id, _analysis())
+        store.save_analysis(
+            second_game_id, profile_id,
+            _analysis(white="Carol", black="AliceOnline", site="game-2"),
+        )
+        analyses = store.load_person_analyses(person_id, profile_id)
+        report = build_player_report(
+            analyses, identity["display_name"], aliases=identity["aliases"])
+        assert report["n_games"] == 2
+        assert report["as_white"] == 1
+        assert report["as_black"] == 1
+        assert store.latest_person_profile_id(person_id) == profile_id
+
+
+def test_progress_compares_equal_windows_and_detects_improvement():
+    from chess_review.metrics import build_player_report
+    from chess_review.render import render_player_html, render_player_markdown
+
+    analyses = [
+        _analysis(date=f"2026.08.{index + 1:02d}", site=f"old-{index}", cp_loss=250)
+        for index in range(10)
+    ] + [
+        _analysis(date=f"2026.09.{index + 1:02d}", site=f"new-{index}", cp_loss=10)
+        for index in range(10)
+    ]
+    report = build_player_report(analyses, "Alice")
+    progress = report["progress"]
+    assert progress["window_games"] == 10
+    assert progress["confidence"] == "medium"
+    assert progress["status"] == "improving"
+    assert progress["metrics"]["acpl_median"]["status"] == "improving"
+    assert progress["metrics"]["blunders_per_100"]["status"] == "improving"
+    assert "previous 10 vs recent 10" in render_player_html(report)
+    assert "| Median ACPL |" in render_player_markdown(report)
+
+
+def test_progress_refuses_to_infer_from_small_sample():
+    from chess_review.metrics import build_player_report
+
+    report = build_player_report([_analysis() for _ in range(19)], "Alice")
+    assert report["progress"]["status"] == "insufficient_data"
+    assert report["progress"]["required_games"] == 20
+
+
+def test_progress_orders_by_date_and_excludes_undated_games():
+    from chess_review.metrics import build_player_report
+
+    analyses = [
+        _analysis(date=f"2026.09.{index + 1:02d}", cp_loss=10)
+        for index in range(10)
+    ] + [
+        _analysis(date="????.??.??", cp_loss=250)
+    ] + [
+        _analysis(date=f"2026.08.{index + 1:02d}", cp_loss=250)
+        for index in range(10)
+    ]
+    progress = build_player_report(analyses, "Alice")["progress"]
+    assert progress["status"] == "improving"
+    assert progress["excluded_undated"] == 1
+    assert progress["baseline"]["first_date"] == "2026.08.01"
+    assert progress["recent"]["last_date"] == "2026.09.10"
 
 
 def test_game_source_provenance_is_idempotent_and_fails_on_changed_game(tmp_path):

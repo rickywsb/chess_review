@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from statistics import mean
+from datetime import datetime
+from statistics import mean, median
 from typing import Optional
 
 import chess
@@ -68,8 +69,19 @@ class GameContext:
     reached_endgame: bool
 
 
-def _build_context(ga: GameAnalysis, player: str) -> Optional[GameContext]:
-    color = ga.player_color(player)
+def _name_key(name: str) -> str:
+    return " ".join(name.casefold().split())
+
+
+def _build_context(ga: GameAnalysis, player_names: set[str]) -> Optional[GameContext]:
+    white_key = _name_key(ga.white)
+    black_key = _name_key(ga.black)
+    if white_key in player_names:
+        color = chess.WHITE
+    elif black_key in player_names:
+        color = chess.BLACK
+    else:
+        color = None
     if color is None:
         return None
     opponent = ga.black if color == chess.WHITE else ga.white
@@ -113,8 +125,133 @@ def _wdl(contexts: list[GameContext]) -> tuple[int, int, int, float]:
     return w, d, l, score_pct
 
 
-def build_player_report(analyses: list[GameAnalysis], player: str) -> dict:
-    contexts = [c for c in (_build_context(ga, player) for ga in analyses) if c is not None]
+def _window_metrics(contexts: list[GameContext]) -> dict:
+    moves = [move for context in contexts for move in context.moves]
+    blunders = sum(1 for move in moves if move.cp_loss >= BLUNDER)
+    clean_games = sum(
+        1 for context in contexts
+        if all(move.cp_loss < BLUNDER for move in context.moves)
+    )
+    wins, draws, losses, score_pct = _wdl(contexts)
+    winning_games = [
+        context for context in contexts
+        if context.peak_eval >= WINNING and context.score is not None
+    ]
+    converted = sum(1 for context in winning_games if context.score == 1.0)
+    return {
+        "games": len(contexts),
+        "moves": len(moves),
+        "wins": wins,
+        "draws": draws,
+        "losses": losses,
+        "acpl_median": round(median(move.cp_loss for move in moves), 1) if moves else None,
+        "blunders_per_100": round(100 * _rate(blunders, len(moves)), 1),
+        "clean_game_rate": _rate(clean_games, len(contexts)),
+        "score_pct": score_pct,
+        "conversion_n": len(winning_games),
+        "conversion_win_rate": (
+            _rate(converted, len(winning_games)) if winning_games else None),
+        "first_date": contexts[0].game.date if contexts else None,
+        "last_date": contexts[-1].game.date if contexts else None,
+    }
+
+
+def _metric_trend(baseline: dict, recent: dict, key: str, *,
+                  lower_is_better: bool, threshold: float) -> dict:
+    before = baseline.get(key)
+    after = recent.get(key)
+    if before is None or after is None:
+        return {"status": "insufficient_data", "before": before,
+                "after": after, "change": None}
+    change = round(after - before, 3)
+    improvement = -change if lower_is_better else change
+    if improvement >= threshold:
+        status = "improving"
+    elif improvement <= -threshold:
+        status = "declining"
+    else:
+        status = "stable"
+    return {"status": status, "before": before, "after": after,
+            "change": change}
+
+
+def _progress(contexts: list[GameContext]) -> dict:
+    dated_contexts = []
+    for index, context in enumerate(contexts):
+        parsed = None
+        for pattern in ("%Y.%m.%d", "%Y-%m-%d"):
+            try:
+                parsed = datetime.strptime(context.game.date, pattern).date()
+                break
+            except ValueError:
+                continue
+        if parsed is not None:
+            dated_contexts.append((parsed, index, context))
+    chronological = [
+        context for _, _, context in sorted(dated_contexts)
+    ]
+    window = min(20, len(chronological) // 2)
+    if window < 10:
+        return {
+            "status": "insufficient_data",
+            "confidence": "insufficient",
+            "window_games": window,
+            "required_games": 20,
+            "available_games": len(chronological),
+            "excluded_undated": len(contexts) - len(chronological),
+            "metrics": {},
+        }
+    baseline = _window_metrics(chronological[-2 * window:-window])
+    recent = _window_metrics(chronological[-window:])
+    metrics = {
+        "acpl_median": _metric_trend(
+            baseline, recent, "acpl_median", lower_is_better=True, threshold=5.0),
+        "blunders_per_100": _metric_trend(
+            baseline, recent, "blunders_per_100",
+            lower_is_better=True, threshold=1.0),
+        "clean_game_rate": _metric_trend(
+            baseline, recent, "clean_game_rate",
+            lower_is_better=False, threshold=0.08),
+        "score_pct": _metric_trend(
+            baseline, recent, "score_pct",
+            lower_is_better=False, threshold=0.08),
+        "conversion_win_rate": _metric_trend(
+            baseline, recent, "conversion_win_rate",
+            lower_is_better=False, threshold=0.10),
+    }
+    directions = {
+        metric["status"] for metric in metrics.values()
+        if metric["status"] in ("improving", "declining")
+    }
+    if directions == {"improving"}:
+        status = "improving"
+    elif directions == {"declining"}:
+        status = "declining"
+    elif directions:
+        status = "mixed"
+    else:
+        status = "stable"
+    return {
+        "status": status,
+        "confidence": "high" if window >= 20 else "medium",
+        "window_games": window,
+        "required_games": 20,
+        "available_games": len(chronological),
+        "excluded_undated": len(contexts) - len(chronological),
+        "baseline": baseline,
+        "recent": recent,
+        "metrics": metrics,
+    }
+
+
+def build_player_report(analyses: list[GameAnalysis], player: str,
+                        aliases: Optional[list[str]] = None) -> dict:
+    player_names = {_name_key(name) for name in (aliases or [player]) if name.strip()}
+    contexts = [
+        context for context in (
+            _build_context(analysis, player_names) for analysis in analyses)
+        if context is not None
+    ]
     report: dict = {"player": player, "n_games_total": len(analyses), "n_games": len(contexts)}
     if not contexts:
         report["error"] = f"No games found for player '{player}'."
@@ -132,6 +269,7 @@ def build_player_report(analyses: list[GameAnalysis], player: str) -> dict:
     report["acpl"] = round(mean(m.cp_loss for m in all_moves), 1) if all_moves else 0.0
     report["blunders_total"] = sum(1 for m in all_moves if m.cp_loss >= BLUNDER)
     report["mistakes_total"] = sum(1 for m in all_moves if m.cp_loss >= MISTAKE)
+    report["progress"] = _progress(contexts)
 
     # ---- phase table --------------------------------------------------------
     phase_rows = []
