@@ -315,7 +315,7 @@ def test_coach_students_reports_coverage_and_sync_health(tmp_path):
         assert student["accounts"][0]["sync"]["last_success_at"]
 
 
-def test_coach_dashboard_routes_are_read_only_and_remote_protected(
+def test_coach_dashboard_routes_are_remote_protected(
         tmp_path, monkeypatch):
     from chess_review import webapp
 
@@ -354,6 +354,42 @@ def test_coach_dashboard_routes_are_read_only_and_remote_protected(
     )
     assert response.status_code == 200
     assert "教练工作台" in response.get_data(as_text=True)
+
+
+def test_coach_dashboard_can_create_student(tmp_path, monkeypatch):
+    from chess_review import webapp
+
+    database = tmp_path / "history.sqlite"
+    monkeypatch.setattr(webapp, "_HISTORY_DB", str(database))
+    monkeypatch.delenv("CHESS_REVIEW_COACH_TOKEN", raising=False)
+    client = webapp.create_app().test_client()
+
+    response = client.post("/api/coach/students", json={
+        "display_name": "Sibo Wu",
+        "aliases": ["Wu, Sibo", "SiboOnline"],
+    })
+    assert response.status_code == 201
+    student = response.get_json()["student"]
+    assert student["display_name"] == "Sibo Wu"
+    assert student["aliases"] == ["Sibo Wu", "SiboOnline", "Wu, Sibo"]
+    assert student["games"] == 0
+
+    assert client.post(
+        "/api/coach/students", json={"display_name": "Wu, Sibo"},
+    ).status_code == 409
+    assert len(client.get("/api/coach/students").get_json()["students"]) == 1
+    assert client.post(
+        "/api/coach/students", json={"display_name": "   "},
+    ).status_code == 400
+    assert client.post(
+        "/api/coach/students", data="name=Sibo",
+    ).status_code == 415
+
+    remote = {"REMOTE_ADDR": "10.0.0.2", "HTTP_FLY_CLIENT_IP": "203.0.113.8"}
+    assert client.post(
+        "/api/coach/students", json={"display_name": "Remote"},
+        environ_overrides=remote,
+    ).status_code == 503
 
 
 def test_game_source_provenance_is_idempotent_and_fails_on_changed_game(tmp_path):

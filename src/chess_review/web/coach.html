@@ -12,7 +12,7 @@
   }
   * { box-sizing:border-box; }
   body { margin:0; color:var(--ink); background:var(--paper); font-family:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif; letter-spacing:0; }
-  button, input { font:inherit; letter-spacing:0; }
+  button, input, textarea { font:inherit; letter-spacing:0; }
   button { cursor:pointer; }
   .shell { min-height:100vh; display:grid; grid-template-columns:280px minmax(0,1fr); }
   aside { background:#202a26; color:#f7faf8; min-height:100vh; padding:24px 18px; position:sticky; top:0; height:100vh; overflow:auto; }
@@ -41,7 +41,12 @@
   .section { border-top:3px solid var(--ink); background:var(--surface); }
   .section-head { min-height:58px; padding:13px 16px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--line); gap:12px; }
   .section-head h2 { margin:0; font-size:15px; }
+  .section-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; min-width:0; }
   .search { width:min(190px,50%); border:1px solid var(--line); border-radius:4px; padding:7px 9px; background:#fafbfa; }
+  .primary { min-height:36px; border:1px solid var(--green); border-radius:4px; background:var(--green); color:#fff; padding:7px 12px; font-weight:700; white-space:nowrap; }
+  .primary:hover { background:#105740; }
+  .primary:disabled { cursor:wait; opacity:.65; }
+  .secondary { min-height:36px; border:1px solid var(--line); border-radius:4px; background:#fff; color:var(--ink); padding:7px 12px; }
   .students { max-height:calc(100vh - 230px); overflow:auto; }
   .student { width:100%; border:0; border-bottom:1px solid var(--line); background:#fff; padding:14px 16px; text-align:left; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:5px 12px; }
   .student:hover, .student.active { background:#f0f5f2; }
@@ -83,6 +88,18 @@
   .loading { padding:80px 20px; text-align:center; color:var(--muted); }
   .error { color:var(--red); background:var(--red-soft); border:1px solid #edc5c1; padding:12px 14px; margin-bottom:18px; }
   .mobile-menu { display:none; border:0; background:transparent; font-size:22px; }
+  dialog { width:min(480px,calc(100vw - 32px)); border:0; border-top:4px solid var(--green); padding:0; color:var(--ink); background:var(--surface); box-shadow:0 20px 60px rgba(24,32,29,.25); }
+  dialog::backdrop { background:rgba(24,32,29,.56); }
+  .dialog-head { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:18px 20px; border-bottom:1px solid var(--line); }
+  .dialog-head h2 { margin:0; font-family:Georgia,"Songti SC",serif; font-size:21px; }
+  .dialog-close { width:36px; height:36px; border:0; background:transparent; color:var(--muted); font-size:26px; line-height:1; }
+  .student-form { padding:20px; display:grid; gap:17px; }
+  .field { display:grid; gap:7px; }
+  .field label { font-size:12px; font-weight:700; }
+  .field input, .field textarea { width:100%; border:1px solid var(--line); border-radius:4px; padding:10px 11px; background:#fafbfa; color:var(--ink); }
+  .field textarea { min-height:104px; resize:vertical; }
+  .form-error { min-height:18px; color:var(--red); font-size:12px; }
+  .dialog-actions { display:flex; justify-content:flex-end; gap:8px; }
   @media (max-width:1180px) {
     .shell { grid-template-columns:1fr; }
     aside { display:block; position:fixed; left:0; top:0; width:280px; z-index:20; transform:translateX(-100%); transition:transform .18s ease; box-shadow:8px 0 24px rgba(0,0,0,.18); }
@@ -102,7 +119,9 @@
     .fact:nth-child(2) { border-right:0; }
     .fact:nth-child(-n+2) { border-bottom:1px solid var(--line); }
     .section-head { align-items:stretch; flex-direction:column; }
+    .section-actions { justify-content:stretch; }
     .search { width:100%; }
+    .section-actions .search { flex:1; }
     .identity { align-items:flex-start; }
     .identity h2 { font-size:21px; overflow-wrap:anywhere; }
     .account { grid-template-columns:80px minmax(0,1fr); }
@@ -136,7 +155,7 @@
       </section>
       <div class="workspace">
         <section class="section" id="students">
-          <div class="section-head"><h2>学员与观察对象</h2><input class="search" id="search" type="search" placeholder="搜索姓名或账号"></div>
+          <div class="section-head"><h2>学员与观察对象</h2><div class="section-actions"><input class="search" id="search" type="search" placeholder="搜索姓名或账号"><button class="primary" id="openCreateStudent" type="button">＋ 新建学员</button></div></div>
           <div class="students" id="studentList"><div class="loading">正在读取档案…</div></div>
         </section>
         <section class="section detail" id="detail"><div class="loading">从左侧选择一位学员查看档案。</div></section>
@@ -144,6 +163,15 @@
     </main>
   </div>
 </div>
+<dialog id="createStudentDialog">
+  <div class="dialog-head"><h2>新建学员档案</h2><button class="dialog-close" id="closeCreateStudent" type="button" aria-label="关闭">×</button></div>
+  <form class="student-form" id="createStudentForm">
+    <div class="field"><label for="displayName">学员姓名</label><input id="displayName" name="display_name" maxlength="120" required autocomplete="off"></div>
+    <div class="field"><label for="aliases">PGN 名称或平台用户名（可选，每行一个）</label><textarea id="aliases" name="aliases" maxlength="2420"></textarea></div>
+    <div class="form-error" id="createStudentError" role="alert"></div>
+    <div class="dialog-actions"><button class="secondary" id="cancelCreateStudent" type="button">取消</button><button class="primary" id="submitCreateStudent" type="submit">创建档案</button></div>
+  </form>
+</dialog>
 <script>
   const state = { students: [], selected: null };
   const el = (id) => document.getElementById(id);
@@ -214,7 +242,7 @@
     } catch (error) { el("detail").innerHTML = `<div class="error">${esc(error.message)}</div>`; }
   }
 
-  async function loadDashboard() {
+  async function loadDashboard(preferredPersonId = null) {
     try {
       const response = await fetch("/api/coach/students");
       const data = await response.json();
@@ -224,11 +252,63 @@
       el("totalGames").textContent = state.students.reduce((sum, item) => sum + item.games, 0);
       el("totalAnalyzed").textContent = state.students.reduce((sum, item) => sum + item.analyzed_games, 0);
       el("syncIssues").textContent = state.students.reduce((sum, item) => sum + item.accounts.filter((account) => account.sync?.last_error).length, 0);
+      state.selected = preferredPersonId || state.selected;
       renderList();
-      if (state.students.length) selectStudent(state.students[0].person_id);
-      else el("detail").innerHTML = '<div class="empty">先通过 CLI 创建学员并导入对局，档案会显示在这里。</div>';
+      if (state.students.length) selectStudent(
+        state.students.some((student) => student.person_id === state.selected)
+          ? state.selected : state.students[0].person_id
+      );
+      else el("detail").innerHTML = '<div class="empty">新建第一位学员，开始建立长期跟踪档案。</div>';
     } catch (error) { showError(error.message); el("studentList").innerHTML = '<div class="empty">工作台数据不可用。</div>'; }
   }
+
+  const createDialog = el("createStudentDialog");
+  function closeCreateStudent() {
+    createDialog.close();
+    el("createStudentForm").reset();
+    el("createStudentError").textContent = "";
+  }
+  el("openCreateStudent").addEventListener("click", () => {
+    createDialog.showModal();
+    el("displayName").focus();
+  });
+  el("closeCreateStudent").addEventListener("click", closeCreateStudent);
+  el("cancelCreateStudent").addEventListener("click", closeCreateStudent);
+  createDialog.addEventListener("close", () => {
+    el("createStudentForm").reset();
+    el("createStudentError").textContent = "";
+  });
+  createDialog.addEventListener("click", (event) => {
+    if (event.target === createDialog) closeCreateStudent();
+  });
+  el("createStudentForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = el("submitCreateStudent");
+    const displayName = el("displayName").value.trim().replace(/\s+/g, " ");
+    const aliases = el("aliases").value.split(/\n/).map((value) => value.trim().replace(/\s+/g, " ")).filter(Boolean);
+    if (!displayName) {
+      el("createStudentError").textContent = "请输入学员姓名。";
+      return;
+    }
+    submit.disabled = true;
+    el("createStudentError").textContent = "";
+    try {
+      const response = await fetch("/api/coach/students", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({display_name: displayName, aliases}),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "无法创建学员档案");
+      const personId = data.student.person_id;
+      closeCreateStudent();
+      await loadDashboard(personId);
+    } catch (error) {
+      el("createStudentError").textContent = error.message;
+    } finally {
+      submit.disabled = false;
+    }
+  });
   el("search").addEventListener("input", renderList);
   document.querySelector(".mobile-menu").addEventListener("click", (event) => {
     const open = document.body.classList.toggle("nav-open");

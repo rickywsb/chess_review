@@ -186,6 +186,42 @@ def create_app() -> Flask:
             students = store.coach_students()
         return jsonify(ok=True, students=students)
 
+    @app.post("/api/coach/students")
+    def create_coach_student():
+        if not _coach_authorized():
+            return _coach_unauthorized()
+        if not request.is_json:
+            return jsonify(ok=False, error="请使用 JSON 提交学员档案。"), 415
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify(ok=False, error="学员档案格式无效。"), 400
+        display_name = payload.get("display_name")
+        aliases = payload.get("aliases", [])
+        if not isinstance(display_name, str):
+            return jsonify(ok=False, error="姓名不能为空且不能超过 120 个字符。"), 400
+        if not isinstance(aliases, list) or len(aliases) > 20:
+            return jsonify(ok=False, error="别名最多 20 个，每个不超过 120 个字符。"), 400
+        display_name = " ".join(display_name.split())
+        if not display_name or len(display_name) > 120:
+            return jsonify(ok=False, error="姓名不能为空且不能超过 120 个字符。"), 400
+        if any(not isinstance(alias, str) for alias in aliases):
+            return jsonify(ok=False, error="别名最多 20 个，每个不超过 120 个字符。"), 400
+        aliases = [" ".join(alias.split()) for alias in aliases]
+        if any(not alias or len(alias) > 120 for alias in aliases):
+            return jsonify(ok=False, error="别名不能为空且不能超过 120 个字符。"), 400
+        try:
+            with PlayerHistoryStore(_HISTORY_DB) as store:
+                person_id = store.create_person(display_name, tuple(aliases))
+                student = next(
+                    item for item in store.coach_students()
+                    if item["person_id"] == person_id)
+        except ValueError:
+            return jsonify(ok=False, error="姓名或别名已属于其他学员。"), 409
+        except Exception:  # noqa: BLE001 - isolate database failures from clients
+            app.logger.exception("Coach student creation failed")
+            return jsonify(ok=False, error="创建学员档案失败，请稍后重试。"), 500
+        return jsonify(ok=True, student=student), 201
+
     @app.get("/api/coach/students/<person_id>")
     def coach_student(person_id: str):
         if not _coach_authorized():

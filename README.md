@@ -65,9 +65,12 @@ The report renders inline and can be opened in a new tab.
 
 ## Coach dashboard
 
-The read-only coach workspace at `http://127.0.0.1:8000/coach` summarizes every
+The coach workspace at `http://127.0.0.1:8000/coach` summarizes every
 canonical person in the history database. It shows archive and analysis
 coverage, long-term progress metrics, and the sync state of each public account.
+Use **新建学员** in the workspace to create a canonical profile and register
+exact PGN names or platform usernames as aliases; CLI creation remains available
+for scripted imports.
 
 ```bash
 export CHESS_REVIEW_HISTORY_DB=data/player-history.sqlite
