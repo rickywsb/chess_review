@@ -13,6 +13,7 @@ shown in an iframe on the page.
 from __future__ import annotations
 
 import io
+import hmac
 import os
 import threading
 import time
@@ -20,11 +21,12 @@ from collections import defaultdict, deque
 from typing import Optional
 
 import chess.pgn
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 from .analysis import analyze_game
 from .classify import MISTAKE
 from .engine import Engine
+from .history import DEFAULT_HISTORY_DB, PlayerHistoryStore
 from .metrics import build_player_report
 from .master_db import MasterOpeningDatabase
 from .opening_book import OpeningBook
@@ -35,6 +37,7 @@ from .render import (
 )
 
 _WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
+_HISTORY_DB = os.environ.get("CHESS_REVIEW_HISTORY_DB", DEFAULT_HISTORY_DB)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -136,12 +139,62 @@ def _client_key() -> str:
     return ip or (request.remote_addr or "unknown")
 
 
+def _coach_authorized() -> bool:
+    token = os.environ.get("CHESS_REVIEW_COACH_TOKEN")
+    if token:
+        auth = request.authorization
+        return bool(auth and hmac.compare_digest(auth.password or "", token))
+    forwarded = request.headers.get("Fly-Client-IP") or request.headers.get(
+        "X-Forwarded-For")
+    return not forwarded and request.remote_addr in ("127.0.0.1", "::1")
+
+
+def _coach_unauthorized() -> Response:
+    return Response(
+        "Coach access requires authentication.", 401,
+        {"WWW-Authenticate": 'Basic realm="Chess Review Coach"'},
+    )
+
+
 def create_app() -> Flask:
     app = Flask(__name__, static_folder=None)
 
     @app.get("/")
     def index():
         return send_from_directory(_WEB_DIR, "index.html")
+
+    @app.get("/coach")
+    def coach():
+        if not _coach_authorized():
+            return _coach_unauthorized()
+        return send_from_directory(_WEB_DIR, "coach.html")
+
+    @app.get("/api/coach/students")
+    def coach_students():
+        if not _coach_authorized():
+            return _coach_unauthorized()
+        with PlayerHistoryStore(_HISTORY_DB) as store:
+            students = store.coach_students()
+        return jsonify(ok=True, students=students)
+
+    @app.get("/api/coach/students/<person_id>")
+    def coach_student(person_id: str):
+        if not _coach_authorized():
+            return _coach_unauthorized()
+        try:
+            with PlayerHistoryStore(_HISTORY_DB) as store:
+                identity = store.person_identity(person_id)
+                profile_id = store.latest_person_profile_id(person_id)
+                analyses = (store.load_person_analyses(person_id, profile_id)
+                            if profile_id else [])
+                summary = next(
+                    item for item in store.coach_students()
+                    if item["person_id"] == person_id)
+        except (ValueError, StopIteration):
+            return jsonify(ok=False, error="未找到该学员档案。"), 404
+        report = build_player_report(
+            analyses, identity["display_name"], aliases=identity["aliases"])
+        return jsonify(ok=True, student=summary, report=report)
 
     @app.post("/api/analyze")
     def analyze():
@@ -206,11 +259,13 @@ def create_app() -> Flask:
                 mode_zh = "双方视角" if dual else f"聚焦 {player or '未指定'}"
                 title = f"{w} vs {b} · {mode_zh}"
                 return jsonify(ok=True, html=html, title=title)
-        except FileNotFoundError as exc:
-            return jsonify(ok=False, error=f"未找到 Stockfish 引擎：{exc}。"
-                           "请先运行 `chess-review setup`。"), 500
-        except Exception as exc:  # noqa: BLE001 - surface any engine/parse error to UI
-            return jsonify(ok=False, error=f"分析失败：{exc}"), 500
+        except FileNotFoundError:
+            app.logger.exception("Stockfish engine is unavailable")
+            return jsonify(ok=False, error="未找到 Stockfish 引擎，请先运行 "
+                           "`chess-review setup`。"), 500
+        except Exception:  # noqa: BLE001 - isolate engine and rendering failures
+            app.logger.exception("Chess analysis failed")
+            return jsonify(ok=False, error="分析失败，请稍后重试。"), 500
         finally:
             if "master_db" in locals() and master_db is not None:
                 master_db.close()

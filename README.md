@@ -63,6 +63,28 @@ Drag a `.pgn` onto the page (or paste PGN text) and pick a mode:
 
 The report renders inline and can be opened in a new tab.
 
+## Coach dashboard
+
+The read-only coach workspace at `http://127.0.0.1:8000/coach` summarizes every
+canonical person in the history database. It shows archive and analysis
+coverage, long-term progress metrics, and the sync state of each public account.
+
+```bash
+export CHESS_REVIEW_HISTORY_DB=data/player-history.sqlite
+chess-review web
+```
+
+Local loopback access works without credentials. Before exposing the workspace
+remotely, set a strong `CHESS_REVIEW_COACH_TOKEN`; `/coach` and its API then use
+HTTP Basic authentication (any username, token as the password). A remote
+request is rejected when the token is absent. On Fly.io, keep the history
+database on the mounted volume and configure authentication before deployment:
+
+```bash
+fly secrets set CHESS_REVIEW_COACH_TOKEN='<strong-random-token>' \
+  -a ricky-chess-review
+```
+
 ## Player tracking report
 
 ```bash

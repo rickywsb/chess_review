@@ -70,6 +70,25 @@ def test_pgn_reads():
     assert len(list(game.mainline_moves())) == 7
 
 
+def test_web_analysis_does_not_reflect_internal_errors(monkeypatch):
+    from chess_review import webapp
+
+    class FailingEngine:
+        def __init__(self, **kwargs):
+            raise RuntimeError('<img src=x onerror="alert(1)">')
+
+    monkeypatch.setattr(webapp, "Engine", FailingEngine)
+    client = webapp.create_app().test_client()
+    response = client.post("/api/analyze", data={
+        "mode": "student",
+        "pgn": '[White "A"]\n[Black "B"]\n[Result "*"]\n\n1. e4 *',
+    })
+
+    assert response.status_code == 500
+    assert response.get_json()["error"] == "分析失败，请稍后重试。"
+    assert "onerror" not in response.get_data(as_text=True)
+
+
 def test_polyglot_book_lookup():
     from chess_review.polyglot_book import PolyglotBook
     book = PolyglotBook()

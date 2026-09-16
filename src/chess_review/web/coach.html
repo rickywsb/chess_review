@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>教练工作台 · Chess Review</title>
+<style>
+  :root {
+    --ink:#18201d; --muted:#66706b; --line:#d9dedb; --paper:#f5f6f3;
+    --surface:#ffffff; --green:#176b52; --green-soft:#e7f1ec;
+    --amber:#9a6414; --amber-soft:#fff3d7; --red:#a43d37; --red-soft:#f9e9e7;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; color:var(--ink); background:var(--paper); font-family:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif; letter-spacing:0; }
+  button, input { font:inherit; letter-spacing:0; }
+  button { cursor:pointer; }
+  .shell { min-height:100vh; display:grid; grid-template-columns:280px minmax(0,1fr); }
+  aside { background:#202a26; color:#f7faf8; min-height:100vh; padding:24px 18px; position:sticky; top:0; height:100vh; overflow:auto; }
+  .brand { display:flex; align-items:center; gap:10px; padding:0 6px 22px; border-bottom:1px solid #3a4641; }
+  .mark { width:30px; height:30px; display:grid; place-items:center; border:1px solid #718079; font-family:Georgia,serif; font-size:20px; }
+  .brand strong { display:block; font-family:Georgia,"Songti SC",serif; font-size:18px; font-weight:600; }
+  .brand span { color:#aeb9b4; font-size:11px; }
+  .nav-close { display:none; position:absolute; right:12px; top:12px; width:36px; height:36px; border:0; background:transparent; color:#fff; font-size:26px; line-height:1; }
+  nav { padding:18px 0; }
+  nav a { color:#e6ece9; text-decoration:none; display:flex; gap:10px; align-items:center; padding:9px 10px; font-size:13px; border-left:2px solid transparent; }
+  nav a.active { background:#2b3832; border-left-color:#77b89f; color:#fff; }
+  nav a:hover { background:#2b3832; }
+  .aside-label { color:#89968f; font-size:10px; text-transform:uppercase; margin:22px 10px 7px; }
+  .main { min-width:0; }
+  header { height:68px; border-bottom:1px solid var(--line); background:rgba(255,255,255,.94); display:flex; align-items:center; justify-content:space-between; padding:0 30px; position:sticky; top:0; z-index:5; }
+  header h1 { margin:0; font-family:Georgia,"Songti SC",serif; font-size:22px; font-weight:600; }
+  header a { color:var(--green); text-decoration:none; font-size:13px; }
+  main { padding:26px 30px 54px; max-width:1500px; margin:0 auto; }
+  .summary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border:1px solid var(--line); background:var(--surface); margin-bottom:22px; }
+  .summary > div { padding:17px 20px; border-right:1px solid var(--line); }
+  .summary > div:last-child { border-right:0; }
+  .summary b { display:block; font-family:Georgia,serif; font-size:25px; font-weight:600; }
+  .summary span { color:var(--muted); font-size:12px; }
+  .workspace { display:grid; grid-template-columns:minmax(330px,.9fr) minmax(500px,1.6fr); gap:22px; align-items:start; }
+  .workspace > *, .section { min-width:0; }
+  .section { border-top:3px solid var(--ink); background:var(--surface); }
+  .section-head { min-height:58px; padding:13px 16px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--line); gap:12px; }
+  .section-head h2 { margin:0; font-size:15px; }
+  .search { width:min(190px,50%); border:1px solid var(--line); border-radius:4px; padding:7px 9px; background:#fafbfa; }
+  .students { max-height:calc(100vh - 230px); overflow:auto; }
+  .student { width:100%; border:0; border-bottom:1px solid var(--line); background:#fff; padding:14px 16px; text-align:left; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:5px 12px; }
+  .student:hover, .student.active { background:#f0f5f2; }
+  .student.active { box-shadow:inset 3px 0 var(--green); }
+  .student-name { font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .student-meta { font-size:12px; color:var(--muted); }
+  .coverage { font-variant-numeric:tabular-nums; color:var(--green); font-size:12px; }
+  .empty { padding:36px 20px; color:var(--muted); text-align:center; font-size:13px; }
+  .detail { min-height:420px; }
+  .identity { padding:18px 20px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:18px; }
+  .identity h2 { font-family:Georgia,"Songti SC",serif; font-size:24px; margin:0 0 4px; }
+  .identity p { margin:0; color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+  .badge { display:inline-flex; align-items:center; min-height:24px; padding:3px 8px; border-radius:3px; background:var(--green-soft); color:var(--green); font-size:11px; font-weight:700; white-space:nowrap; }
+  .badge.warn { background:var(--amber-soft); color:var(--amber); }
+  .badge.bad { background:var(--red-soft); color:var(--red); }
+  .facts { display:grid; grid-template-columns:repeat(4,1fr); border-bottom:1px solid var(--line); }
+  .fact { padding:14px 16px; border-right:1px solid var(--line); }
+  .fact:last-child { border-right:0; }
+  .fact b { display:block; font-size:18px; }
+  .fact b { overflow-wrap:anywhere; }
+  .fact span { color:var(--muted); font-size:11px; }
+  .block { padding:18px 20px; border-bottom:1px solid var(--line); }
+  .block:last-child { border-bottom:0; }
+  .block-title { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  .block-title h3 { margin:0; font-size:14px; }
+  .block-title span { color:var(--muted); font-size:11px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th { color:var(--muted); font-weight:600; text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); }
+  td { padding:9px 8px; border-bottom:1px solid #edf0ee; }
+  th.num, td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .direction { font-weight:700; }
+  .direction.improving { color:var(--green); }
+  .direction.declining { color:var(--red); }
+  .direction.stable { color:var(--muted); }
+  .accounts { display:grid; gap:8px; }
+  .account { display:grid; grid-template-columns:100px minmax(0,1fr) auto; align-items:center; gap:12px; border:1px solid var(--line); padding:10px 12px; }
+  .account strong { text-transform:capitalize; font-size:12px; }
+  .account small { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .loading { padding:80px 20px; text-align:center; color:var(--muted); }
+  .error { color:var(--red); background:var(--red-soft); border:1px solid #edc5c1; padding:12px 14px; margin-bottom:18px; }
+  .mobile-menu { display:none; border:0; background:transparent; font-size:22px; }
+  @media (max-width:1180px) {
+    .shell { grid-template-columns:1fr; }
+    aside { display:block; position:fixed; left:0; top:0; width:280px; z-index:20; transform:translateX(-100%); transition:transform .18s ease; box-shadow:8px 0 24px rgba(0,0,0,.18); }
+    body.nav-open aside { transform:translateX(0); }
+    .nav-close { display:block; }
+    header { padding:0 18px; }
+    .mobile-menu { display:block; }
+    main { padding:20px 16px 40px; }
+    .workspace { grid-template-columns:1fr; }
+    .students { max-height:360px; }
+  }
+  @media (max-width:620px) {
+    .summary { grid-template-columns:repeat(2,1fr); }
+    .summary > div:nth-child(2) { border-right:0; }
+    .summary > div:nth-child(-n+2) { border-bottom:1px solid var(--line); }
+    .facts { grid-template-columns:repeat(2,1fr); }
+    .fact:nth-child(2) { border-right:0; }
+    .fact:nth-child(-n+2) { border-bottom:1px solid var(--line); }
+    .section-head { align-items:stretch; flex-direction:column; }
+    .search { width:100%; }
+    .identity { align-items:flex-start; }
+    .identity h2 { font-size:21px; overflow-wrap:anywhere; }
+    .account { grid-template-columns:80px minmax(0,1fr); }
+    .account .badge { grid-column:2; justify-self:start; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <button class="nav-close" aria-label="关闭导航">×</button>
+    <div class="brand"><div class="mark">♜</div><div><strong>Chess Review</strong><span>Coach Intelligence</span></div></div>
+    <nav>
+      <a class="active" href="/coach"><span>▦</span>学员总览</a>
+      <a href="/"><span>＋</span>单局分析</a>
+      <div class="aside-label">工作流</div>
+      <a href="#students"><span>◎</span>学员档案</a>
+      <a href="#progress"><span>↗</span>长期趋势</a>
+      <a href="#sources"><span>⇄</span>数据来源</a>
+    </nav>
+  </aside>
+  <div class="main">
+    <header><div style="display:flex;align-items:center;gap:12px"><button class="mobile-menu" aria-label="导航" aria-expanded="false">☰</button><h1>教练工作台</h1></div><a href="/">打开单局分析 →</a></header>
+    <main>
+      <div id="error"></div>
+      <section class="summary" aria-label="档案概览">
+        <div><b id="totalStudents">—</b><span>档案人数</span></div>
+        <div><b id="totalGames">—</b><span>已收录对局</span></div>
+        <div><b id="totalAnalyzed">—</b><span>已完成分析</span></div>
+        <div><b id="syncIssues">—</b><span>同步需关注</span></div>
+      </section>
+      <div class="workspace">
+        <section class="section" id="students">
+          <div class="section-head"><h2>学员与观察对象</h2><input class="search" id="search" type="search" placeholder="搜索姓名或账号"></div>
+          <div class="students" id="studentList"><div class="loading">正在读取档案…</div></div>
+        </section>
+        <section class="section detail" id="detail"><div class="loading">从左侧选择一位学员查看档案。</div></section>
+      </div>
+    </main>
+  </div>
+</div>
+<script>
+  const state = { students: [], selected: null };
+  const el = (id) => document.getElementById(id);
+  const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+  const pct = (value) => value == null ? "—" : `${Math.round(value * 100)}%`;
+  const trendLabel = { improving:"改善", declining:"下降", stable:"稳定", mixed:"分化", insufficient_data:"证据不足" };
+  const metricLabels = { acpl_median:"ACPL 中位数", blunders_per_100:"每百步严重失误", clean_game_rate:"无严重失误对局", score_pct:"得分率", conversion_win_rate:"优势转化率" };
+  const percentageMetrics = new Set(["clean_game_rate", "score_pct", "conversion_win_rate"]);
+
+  function showError(message) { el("error").innerHTML = `<div class="error">${esc(message)}</div>`; }
+  function accountText(account) { return account.username || account.external_id; }
+  function searchable(student) { return [student.display_name, ...student.aliases, ...student.accounts.map(accountText)].join(" ").toLowerCase(); }
+
+  function renderList() {
+    const query = el("search").value.trim().toLowerCase();
+    const students = state.students.filter((student) => searchable(student).includes(query));
+    if (!students.length) { el("studentList").innerHTML = '<div class="empty">没有匹配的学员档案。</div>'; return; }
+    el("studentList").innerHTML = students.map((student) => `
+      <button class="student ${student.person_id === state.selected ? "active" : ""}" data-id="${esc(student.person_id)}">
+        <span class="student-name">${esc(student.display_name)}</span><span class="coverage">${pct(student.analysis_coverage)}</span>
+        <span class="student-meta">${student.games} 局 · ${student.accounts.length} 个数据源</span><span class="student-meta">分析覆盖</span>
+      </button>`).join("");
+    document.querySelectorAll(".student").forEach((button) => button.addEventListener("click", () => selectStudent(button.dataset.id)));
+  }
+
+  function renderAccounts(accounts) {
+    if (!accounts.length) return '<div class="empty">尚未绑定公开数据源。</div>';
+    return `<div class="accounts">${accounts.map((account) => {
+      const sync = account.sync;
+      const status = sync?.last_error ? "异常" : sync?.last_success_at ? "正常" : "未同步";
+      const cls = sync?.last_error ? "bad" : sync?.last_success_at ? "" : "warn";
+      return `<div class="account"><strong>${esc(account.source)}</strong><small>${esc(accountText(account))}</small><span class="badge ${cls}">${status}</span></div>`;
+    }).join("")}</div>`;
+  }
+
+  function value(metric, side, key) {
+    const raw = metric[side];
+    if (raw == null) return "—";
+    return percentageMetrics.has(key) ? pct(raw) : raw;
+  }
+
+  function renderTrend(progress) {
+    if (!progress || progress.status === "insufficient_data") {
+      return `<div class="empty">当前有 ${progress?.available_games || 0} 盘可用于趋势分析，至少需要 ${progress?.required_games || 20} 盘有日期的对局。</div>`;
+    }
+    const rows = Object.entries(metricLabels).map(([key, label]) => {
+      const metric = progress.metrics[key];
+      return `<tr><td>${label}</td><td class="num">${value(metric,"before",key)}</td><td class="num">${value(metric,"after",key)}</td><td class="direction ${metric.status}">${trendLabel[metric.status]}</td></tr>`;
+    }).join("");
+    return `<div class="block-title"><h3>近期表现</h3><span>前 ${progress.window_games} 盘 vs 最近 ${progress.window_games} 盘 · ${progress.confidence === "high" ? "高" : "中"}置信度</span></div>
+      <table><thead><tr><th>指标</th><th class="num">此前</th><th class="num">近期</th><th>方向</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  async function selectStudent(personId) {
+    state.selected = personId;
+    renderList();
+    el("detail").innerHTML = '<div class="loading">正在整理学员档案…</div>';
+    try {
+      const response = await fetch(`/api/coach/students/${encodeURIComponent(personId)}`);
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "无法读取学员档案");
+      const student = data.student, report = data.report, progress = report.progress;
+      el("detail").innerHTML = `
+        <div class="identity"><div><h2>${esc(student.display_name)}</h2><p>${student.aliases.map(esc).join(" · ")}</p></div><span class="badge ${progress?.status === "declining" ? "bad" : progress?.status === "insufficient_data" ? "warn" : ""}">${trendLabel[progress?.status] || "待分析"}</span></div>
+        <div class="facts"><div class="fact"><b>${student.games}</b><span>收录对局</span></div><div class="fact"><b>${student.analyzed_games}</b><span>已分析</span></div><div class="fact"><b>${pct(student.analysis_coverage)}</b><span>分析覆盖</span></div><div class="fact"><b>${student.last_game_date || "—"}</b><span>最近对局</span></div></div>
+        <div class="block" id="progress">${renderTrend(progress)}</div>
+        <div class="block" id="sources"><div class="block-title"><h3>数据来源</h3><span>${student.accounts.length} 个账号</span></div>${renderAccounts(student.accounts)}</div>`;
+    } catch (error) { el("detail").innerHTML = `<div class="error">${esc(error.message)}</div>`; }
+  }
+
+  async function loadDashboard() {
+    try {
+      const response = await fetch("/api/coach/students");
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "无法读取工作台");
+      state.students = data.students;
+      el("totalStudents").textContent = state.students.length;
+      el("totalGames").textContent = state.students.reduce((sum, item) => sum + item.games, 0);
+      el("totalAnalyzed").textContent = state.students.reduce((sum, item) => sum + item.analyzed_games, 0);
+      el("syncIssues").textContent = state.students.reduce((sum, item) => sum + item.accounts.filter((account) => account.sync?.last_error).length, 0);
+      renderList();
+      if (state.students.length) selectStudent(state.students[0].person_id);
+      else el("detail").innerHTML = '<div class="empty">先通过 CLI 创建学员并导入对局，档案会显示在这里。</div>';
+    } catch (error) { showError(error.message); el("studentList").innerHTML = '<div class="empty">工作台数据不可用。</div>'; }
+  }
+  el("search").addEventListener("input", renderList);
+  document.querySelector(".mobile-menu").addEventListener("click", (event) => {
+    const open = document.body.classList.toggle("nav-open");
+    event.currentTarget.setAttribute("aria-expanded", String(open));
+  });
+  document.querySelector(".nav-close").addEventListener("click", () => {
+    document.body.classList.remove("nav-open");
+    document.querySelector(".mobile-menu").setAttribute("aria-expanded", "false");
+  });
+  document.querySelectorAll("aside a").forEach((link) => link.addEventListener("click", () => {
+    document.body.classList.remove("nav-open");
+    document.querySelector(".mobile-menu").setAttribute("aria-expanded", "false");
+  }));
+  loadDashboard();
+</script>
+</body>
+</html>

@@ -9,9 +9,10 @@
   * { box-sizing: border-box; }
   body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", Segoe UI, Roboto, sans-serif;
          color: var(--ink); margin: 0; background: var(--bg); line-height: 1.5; }
-  header { background:#1a1a1a; color:#fff; padding:16px 24px; }
+  header { background:#1a1a1a; color:#fff; padding:16px 24px; display:flex; justify-content:space-between; align-items:center; gap:20px; }
   header h1 { margin:0; font-size:20px; }
   header p { margin:4px 0 0; color:#bbb; font-size:13px; }
+  header a { color:#dcebe4; text-decoration:none; font-size:13px; white-space:nowrap; }
   .wrap { max-width: 1080px; margin: 0 auto; padding: 24px; }
   .panel { background:#fff; border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:20px; }
   .modes { display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; margin-bottom:8px; }
@@ -50,8 +51,9 @@
 </head>
 <body>
 <header>
-  <h1>Chess Review · 对局复盘</h1>
-  <p>拖入 PGN，一键生成中文分析报告（引擎：本地 Stockfish）</p>
+  <div><h1>Chess Review · 对局复盘</h1>
+  <p>拖入 PGN，一键生成中文分析报告（引擎：本地 Stockfish）</p></div>
+  <a href="/coach">进入教练工作台 →</a>
 </header>
 
 <div class="wrap">
@@ -150,6 +152,14 @@
   }
 
   // ---- submit ------------------------------------------------------------
+  function showStatusError(message) {
+    const status = $("status");
+    const error = document.createElement("span");
+    error.className = "err";
+    error.textContent = message;
+    status.replaceChildren(error);
+  }
+
   $("go").addEventListener("click", async () => {
     const status = $("status");
     const fd = new FormData();
@@ -161,7 +171,7 @@
     else fd.append("pgn", $("pgn").value);
 
     if (!fileInput.files[0] && !$("pgn").value.trim()) {
-      status.innerHTML = '<span class="err">请先拖入 PGN 文件或粘贴 PGN 文本。</span>';
+      showStatusError("请先拖入 PGN 文件或粘贴 PGN 文本。");
       return;
     }
 
@@ -171,7 +181,7 @@
       const res = await fetch("/api/analyze", { method: "POST", body: fd });
       const data = await res.json();
       if (!data.ok) {
-        status.innerHTML = '<span class="err">' + (data.error || "分析失败") + "</span>";
+        showStatusError(data.error || "分析失败");
       } else {
         status.textContent = data.note ? ("完成（提示：" + data.note + "）") : "分析完成。";
         $("resultTitle").textContent = data.title || "分析结果";
@@ -183,7 +193,7 @@
         $("resultPanel").scrollIntoView({ behavior: "smooth" });
       }
     } catch (e) {
-      status.innerHTML = '<span class="err">请求出错：' + e + "</span>";
+      showStatusError("请求出错，请稍后重试。");
     } finally {
       $("go").disabled = false;
     }

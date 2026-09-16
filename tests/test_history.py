@@ -1,4 +1,5 @@
 """Tests for persistent player history and incremental analysis caching."""
+import base64
 import io
 import sqlite3
 from argparse import Namespace
@@ -293,6 +294,55 @@ def test_progress_orders_by_date_and_excludes_undated_games():
     assert progress["excluded_undated"] == 1
     assert progress["baseline"]["first_date"] == "2026.08.01"
     assert progress["recent"]["last_date"] == "2026.09.10"
+
+
+def test_coach_students_reports_coverage_and_sync_health(tmp_path):
+    database = tmp_path / "history.sqlite"
+    with PlayerHistoryStore(str(database)) as store:
+        person_id = store.create_person("Alice", ("AliceOnline",))
+        game_id, _ = store.ingest(_game(white="AliceOnline"))
+        account_id = store.add_external_account(
+            person_id, "lichess", "alice", username="AliceOnline")
+        store.save_sync_state(account_id, {"since_ms": 123})
+        profile_id = store.register_profile({"engine": {"depth": 18}})
+        store.save_analysis(game_id, profile_id, _analysis(white="AliceOnline"))
+
+        student = store.coach_students()[0]
+        assert student["games"] == 1
+        assert student["analyzed_games"] == 1
+        assert student["analysis_coverage"] == 1.0
+        assert student["latest_profile_id"] == profile_id
+        assert student["accounts"][0]["sync"]["last_success_at"]
+
+
+def test_coach_dashboard_routes_are_read_only_and_remote_protected(
+        tmp_path, monkeypatch):
+    from chess_review import webapp
+
+    database = tmp_path / "history.sqlite"
+    with PlayerHistoryStore(str(database)) as store:
+        person_id = store.create_person("Alice")
+        store.ingest(_game())
+
+    monkeypatch.setattr(webapp, "_HISTORY_DB", str(database))
+    monkeypatch.delenv("CHESS_REVIEW_COACH_TOKEN", raising=False)
+    client = webapp.create_app().test_client()
+    assert client.get("/coach").status_code == 200
+    listing = client.get("/api/coach/students").get_json()
+    assert listing["students"][0]["person_id"] == person_id
+    assert client.get(f"/api/coach/students/{person_id}").status_code == 200
+    assert client.get("/api/coach/students/missing").status_code == 404
+
+    remote = {"REMOTE_ADDR": "10.0.0.2", "HTTP_FLY_CLIENT_IP": "203.0.113.8"}
+    assert client.get("/coach", environ_overrides=remote).status_code == 401
+    monkeypatch.setenv("CHESS_REVIEW_COACH_TOKEN", "test-secret")
+    credentials = base64.b64encode(b"coach:test-secret").decode("ascii")
+    response = client.get(
+        "/coach", environ_overrides=remote,
+        headers={"Authorization": f"Basic {credentials}"},
+    )
+    assert response.status_code == 200
+    assert "教练工作台" in response.get_data(as_text=True)
 
 
 def test_game_source_provenance_is_idempotent_and_fails_on_changed_game(tmp_path):

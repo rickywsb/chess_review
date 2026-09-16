@@ -651,6 +651,42 @@ class PlayerHistoryStore:
         """, (person_id,)).fetchone()
         return row[0] if row else None
 
+    def coach_students(self) -> list[dict]:
+        """Return lightweight coverage and sync facts for the coach dashboard."""
+        students = []
+        for person in self.people():
+            person_id = person["person_id"]
+            game_row = self._connection.execute("""
+                SELECT COUNT(*), MIN(NULLIF(g.played_date, '')),
+                       MAX(NULLIF(g.played_date, ''))
+                FROM games g
+                JOIN game_participants gp ON gp.game_id=g.game_id
+                WHERE gp.person_id=?
+            """, (person_id,)).fetchone()
+            profile_id = self.latest_person_profile_id(person_id)
+            analyzed = 0
+            if profile_id is not None:
+                analyzed = self._connection.execute("""
+                    SELECT COUNT(*) FROM game_analyses ga
+                    JOIN game_participants gp ON gp.game_id=ga.game_id
+                    WHERE gp.person_id=? AND ga.profile_id=?
+                """, (person_id, profile_id)).fetchone()[0]
+            accounts = []
+            for account in person["accounts"]:
+                accounts.append({**account, "sync": self.sync_state(account["account_id"])})
+            games = game_row[0]
+            students.append({
+                **person,
+                "accounts": accounts,
+                "games": games,
+                "analyzed_games": analyzed,
+                "analysis_coverage": analyzed / games if games else 0.0,
+                "first_game_date": game_row[1],
+                "last_game_date": game_row[2],
+                "latest_profile_id": profile_id,
+            })
+        return students
+
     def info(self, player: Optional[str] = None) -> dict:
         game_filter = ""
         params: tuple = ()
