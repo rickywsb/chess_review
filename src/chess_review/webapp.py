@@ -15,8 +15,10 @@ from __future__ import annotations
 import io
 import hmac
 import os
+import re
 import threading
 import time
+import urllib.parse
 from collections import defaultdict, deque
 from typing import Optional
 
@@ -35,6 +37,7 @@ from .render import (
     render_game_html,
     render_player_html,
 )
+from .sources import SourceSyncError, sync_external_account
 
 _WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 _HISTORY_DB = os.environ.get("CHESS_REVIEW_HISTORY_DB", DEFAULT_HISTORY_DB)
@@ -77,6 +80,15 @@ def _read_pgn_text(text: str) -> list[chess.pgn.Game]:
     return games
 
 
+def _valid_import_game(game: chess.pgn.Game) -> bool:
+    return (
+        not game.errors
+        and game.headers.get("White", "?") not in ("", "?")
+        and game.headers.get("Black", "?") not in ("", "?")
+        and game.next() is not None
+    )
+
+
 def _clamp_int(value, default: int, lo: int, hi: int) -> int:
     try:
         n = int(value)
@@ -93,6 +105,7 @@ _RATE_MAX = _env_int("CHESS_REVIEW_RATE_MAX", 20)        # requests / window / I
 _RATE_WINDOW = _env_int("CHESS_REVIEW_RATE_WINDOW", 60)  # seconds
 _MAX_PGN_BYTES = _env_int("CHESS_REVIEW_MAX_PGN_BYTES", 1_000_000)  # ~1 MB
 _MAX_GAMES = _env_int("CHESS_REVIEW_MAX_GAMES", 200)
+_MAX_IMPORT_GAMES = _env_int("CHESS_REVIEW_MAX_IMPORT_GAMES", 500)
 
 
 class _RateLimiter:
@@ -167,6 +180,19 @@ def _coach_unauthorized() -> Response:
 
 def create_app() -> Flask:
     app = Flask(__name__, static_folder=None)
+    coach_write_limiter = _RateLimiter(
+        _env_int("CHESS_REVIEW_COACH_WRITE_MAX", 30), 60)
+    coach_sync_limiter = _RateLimiter(
+        _env_int("CHESS_REVIEW_COACH_SYNC_MAX", 6), 60)
+
+    def coach_rate_response(limiter: _RateLimiter) -> Optional[Response]:
+        allowed, retry = limiter.allow(_client_key())
+        if allowed:
+            return None
+        response = jsonify(ok=False, error=f"操作过于频繁，请约 {retry} 秒后再试。")
+        response.status_code = 429
+        response.headers["Retry-After"] = str(retry)
+        return response
 
     @app.get("/")
     def index():
@@ -190,6 +216,9 @@ def create_app() -> Flask:
     def create_coach_student():
         if not _coach_authorized():
             return _coach_unauthorized()
+        limited = coach_rate_response(coach_write_limiter)
+        if limited is not None:
+            return limited
         if not request.is_json:
             return jsonify(ok=False, error="请使用 JSON 提交学员档案。"), 415
         payload = request.get_json(silent=True)
@@ -240,6 +269,164 @@ def create_app() -> Flask:
         report = build_player_report(
             analyses, identity["display_name"], aliases=identity["aliases"])
         return jsonify(ok=True, student=summary, report=report)
+
+    @app.post("/api/coach/students/<person_id>/accounts")
+    def create_coach_account(person_id: str):
+        if not _coach_authorized():
+            return _coach_unauthorized()
+        limited = coach_rate_response(coach_write_limiter)
+        if limited is not None:
+            return limited
+        if not request.is_json:
+            return jsonify(ok=False, error="请使用 JSON 提交平台账号。"), 415
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify(ok=False, error="平台账号格式无效。"), 400
+        source_value = payload.get("source", "")
+        username_value = payload.get("username", "")
+        profile_url_value = payload.get("profile_url", "")
+        if not all(isinstance(value, str) for value in (
+                source_value, username_value, profile_url_value)):
+            return jsonify(ok=False, error="平台账号格式无效。"), 400
+        source = source_value.strip().casefold()
+        username = username_value.strip()
+        profile_url = profile_url_value.strip()
+        if source not in {"chess.com", "lichess", "chessbase"}:
+            return jsonify(ok=False, error="暂不支持该平台。"), 400
+        if len(username) > 120 or len(profile_url) > 500:
+            return jsonify(ok=False, error="账号或链接过长。"), 400
+        if source in {"chess.com", "lichess"}:
+            if not username or any(char.isspace() for char in username):
+                return jsonify(ok=False, error="请输入有效的平台用户名。"), 400
+            external_id = username.casefold()
+            profile_url = profile_url or (
+                f"https://www.chess.com/member/{urllib.parse.quote(username, safe='')}"
+                if source == "chess.com"
+                else f"https://lichess.org/@/{urllib.parse.quote(username, safe='')}"
+            )
+        else:
+            parsed = urllib.parse.urlparse(profile_url)
+            path_parts = parsed.path.rstrip("/").split("/")
+            if (parsed.scheme != "https" or parsed.hostname != "players.chessbase.com"
+                    or "player" not in path_parts
+                    or not path_parts[-1].isdigit()):
+                return jsonify(ok=False, error="请输入有效的 ChessBase Players 链接。"), 400
+            external_id = parsed.path.rstrip("/").split("/")[-1]
+        try:
+            with PlayerHistoryStore(_HISTORY_DB) as store:
+                store.person_identity(person_id)
+                account_id = store.add_external_account(
+                    person_id, source, external_id,
+                    username=username or None, profile_url=profile_url,
+                )
+                student = next(
+                    item for item in store.coach_students()
+                    if item["person_id"] == person_id)
+        except ValueError:
+            return jsonify(ok=False, error="学员不存在，或该账号已绑定其他学员。"), 409
+        except Exception:  # noqa: BLE001 - isolate database failures from clients
+            app.logger.exception("Coach account creation failed")
+            return jsonify(ok=False, error="保存平台账号失败，请稍后重试。"), 500
+        account = next(
+            item for item in student["accounts"]
+            if item["account_id"] == account_id)
+        return jsonify(ok=True, account=account, student=student), 201
+
+    @app.post("/api/coach/students/<person_id>/accounts/<account_id>/sync")
+    def sync_coach_account(person_id: str, account_id: str):
+        if not _coach_authorized():
+            return _coach_unauthorized()
+        limited = coach_rate_response(coach_sync_limiter)
+        if limited is not None:
+            return limited
+        try:
+            with PlayerHistoryStore(_HISTORY_DB) as store:
+                account = store.external_account(account_id)
+                if account["person_id"] != person_id:
+                    return jsonify(ok=False, error="未找到该平台账号。"), 404
+                if account["source"] not in {"chess.com", "lichess"}:
+                    return jsonify(
+                        ok=False,
+                        error="该平台没有可用的官方自动同步接口，请导入 PGN。",
+                    ), 422
+                result = sync_external_account(
+                    store, account_id,
+                    user_agent=os.environ.get(
+                        "CHESS_REVIEW_USER_AGENT", "chess-review/0.1"),
+                    lichess_token=os.environ.get("LICHESS_TOKEN"),
+                    timeout=60,
+                )
+        except ValueError:
+            return jsonify(ok=False, error="未找到该平台账号。"), 404
+        except SourceSyncError:
+            app.logger.exception("Coach account sync failed")
+            return jsonify(ok=False, error="平台同步失败，请稍后重试。"), 502
+        return jsonify(ok=True, result=result.as_dict())
+
+    @app.post("/api/coach/students/<person_id>/games/import")
+    def import_coach_games(person_id: str):
+        if not _coach_authorized():
+            return _coach_unauthorized()
+        limited = coach_rate_response(coach_write_limiter)
+        if limited is not None:
+            return limited
+        if not request.is_json:
+            return jsonify(ok=False, error="请使用 JSON 提交 PGN。"), 415
+        payload = request.get_json(silent=True)
+        pgn_text = payload.get("pgn") if isinstance(payload, dict) else None
+        if not isinstance(pgn_text, str) or not pgn_text.strip():
+            return jsonify(ok=False, error="请选择或粘贴 PGN 棋谱。"), 400
+        if len(pgn_text.encode("utf-8")) > _MAX_PGN_BYTES:
+            return jsonify(ok=False, error="PGN 内容过大，请拆分后导入。"), 413
+        games = _read_pgn_text(pgn_text)
+        declared_games = len(re.findall(
+            r'^\s*\[Event\s+"', pgn_text, flags=re.MULTILINE))
+        if (not games or declared_games != len(games)
+            or any(not _valid_import_game(game) for game in games)):
+            return jsonify(
+                ok=False,
+                error="PGN 中存在无法解析或缺少棋手信息的对局。",
+            ), 400
+        if len(games) > _MAX_IMPORT_GAMES:
+            return jsonify(
+                ok=False,
+                error=f"单次最多导入 {_MAX_IMPORT_GAMES} 盘棋。",
+            ), 413
+        try:
+            with PlayerHistoryStore(_HISTORY_DB) as store:
+                identity = store.person_identity(person_id)
+                alias_keys = {
+                    " ".join(alias.casefold().split())
+                    for alias in identity["aliases"]
+                }
+                matched = [game for game in games if any(
+                    " ".join(game.headers.get(color, "").casefold().split())
+                    in alias_keys
+                    for color in ("White", "Black")
+                )]
+                if not matched:
+                    return jsonify(
+                        ok=False,
+                        error="棋谱中没有匹配该学员姓名或别名的对局。",
+                    ), 400
+                imported = 0
+                duplicates = 0
+                for game in matched:
+                    _, inserted = store.ingest(game)
+                    imported += int(inserted)
+                    duplicates += int(not inserted)
+        except ValueError:
+            return jsonify(ok=False, error="未找到该学员档案。"), 404
+        except Exception:  # noqa: BLE001 - isolate database failures from clients
+            app.logger.exception("Coach PGN import failed")
+            return jsonify(ok=False, error="导入棋谱失败，请稍后重试。"), 500
+        return jsonify(ok=True, result={
+            "games_seen": len(games),
+            "games_matched": len(matched),
+            "games_imported": imported,
+            "games_duplicate": duplicates,
+            "games_skipped": len(games) - len(matched),
+        })
 
     @app.post("/api/analyze")
     def analyze():

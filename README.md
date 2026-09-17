@@ -72,6 +72,20 @@ Use **新建学员** in the workspace to create a canonical profile and register
 exact PGN names or platform usernames as aliases; CLI creation remains available
 for scripted imports.
 
+Open a student's **数据来源** section to add games:
+
+- **Chess.com / Lichess**: choose **绑定平台**, enter the exact username, and
+  the first official API sync starts immediately. Later syncs fetch only new or
+  changed archives.
+- **ChessBase Players**: save the player URL as a reference, then export games
+  to PGN and use **导入 PGN**. Add the exact name used in its PGN files (for
+  example `Wu,S`) while binding the link. ChessBase Players does not publish a
+  stable PGN API, so the application does not scrape its pages.
+- **Other tournament sites or databases**: download PGN and use **导入 PGN**.
+  The importer keeps only games whose White or Black header exactly matches one
+  of the student's registered aliases, skips unrelated games, and deduplicates
+  repeated imports.
+
 ```bash
 export CHESS_REVIEW_HISTORY_DB=data/player-history.sqlite
 chess-review web

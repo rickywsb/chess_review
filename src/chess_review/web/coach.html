@@ -85,8 +85,13 @@
   .account { display:grid; grid-template-columns:100px minmax(0,1fr) auto; align-items:center; gap:12px; border:1px solid var(--line); padding:10px 12px; }
   .account strong { text-transform:capitalize; font-size:12px; }
   .account small { color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .account small a { color:var(--green); text-decoration:none; }
+  .account-actions { display:flex; align-items:center; justify-content:flex-end; gap:7px; }
+  .mini { min-height:28px; border:1px solid var(--line); border-radius:3px; background:#fff; color:var(--green); padding:4px 8px; font-size:11px; font-weight:700; white-space:nowrap; }
+  .block-actions { display:flex; align-items:center; gap:7px; }
   .loading { padding:80px 20px; text-align:center; color:var(--muted); }
   .error { color:var(--red); background:var(--red-soft); border:1px solid #edc5c1; padding:12px 14px; margin-bottom:18px; }
+  .notice { color:var(--green); background:var(--green-soft); border:1px solid #b9d8ca; padding:12px 14px; margin-bottom:18px; }
   .mobile-menu { display:none; border:0; background:transparent; font-size:22px; }
   dialog { width:min(480px,calc(100vw - 32px)); border:0; border-top:4px solid var(--green); padding:0; color:var(--ink); background:var(--surface); box-shadow:0 20px 60px rgba(24,32,29,.25); }
   dialog::backdrop { background:rgba(24,32,29,.56); }
@@ -95,8 +100,9 @@
   .dialog-close { width:36px; height:36px; border:0; background:transparent; color:var(--muted); font-size:26px; line-height:1; }
   .student-form { padding:20px; display:grid; gap:17px; }
   .field { display:grid; gap:7px; }
+  .field[hidden] { display:none; }
   .field label { font-size:12px; font-weight:700; }
-  .field input, .field textarea { width:100%; border:1px solid var(--line); border-radius:4px; padding:10px 11px; background:#fafbfa; color:var(--ink); }
+  .field input, .field textarea, .field select { width:100%; border:1px solid var(--line); border-radius:4px; padding:10px 11px; background:#fafbfa; color:var(--ink); }
   .field textarea { min-height:104px; resize:vertical; }
   .form-error { min-height:18px; color:var(--red); font-size:12px; }
   .dialog-actions { display:flex; justify-content:flex-end; gap:8px; }
@@ -125,7 +131,9 @@
     .identity { align-items:flex-start; }
     .identity h2 { font-size:21px; overflow-wrap:anywhere; }
     .account { grid-template-columns:80px minmax(0,1fr); }
-    .account .badge { grid-column:2; justify-self:start; }
+    .account-actions { grid-column:2; justify-content:flex-start; flex-wrap:wrap; }
+    .block-title { align-items:flex-start; gap:12px; }
+    .block-actions { justify-content:flex-end; flex-wrap:wrap; }
   }
 </style>
 </head>
@@ -172,6 +180,25 @@
     <div class="dialog-actions"><button class="secondary" id="cancelCreateStudent" type="button">取消</button><button class="primary" id="submitCreateStudent" type="submit">创建档案</button></div>
   </form>
 </dialog>
+<dialog id="sourceDialog">
+  <div class="dialog-head"><h2>绑定数据来源</h2><button class="dialog-close" data-close-dialog="sourceDialog" type="button" aria-label="关闭">×</button></div>
+  <form class="student-form" id="sourceForm">
+    <div class="field"><label for="sourceType">平台</label><select id="sourceType"><option value="chess.com">Chess.com（自动同步）</option><option value="lichess">Lichess（自动同步）</option><option value="chessbase">ChessBase Players（资料链接）</option></select></div>
+    <div class="field" id="sourceUsernameField"><label for="sourceUsername" id="sourceUsernameLabel">平台用户名</label><input id="sourceUsername" maxlength="120" autocomplete="off"></div>
+    <div class="field" id="sourceUrlField" hidden><label for="sourceUrl">ChessBase Players 链接</label><input id="sourceUrl" type="url" maxlength="500" placeholder="https://players.chessbase.com/en/player/..." autocomplete="off"></div>
+    <div class="form-error" id="sourceError" role="alert"></div>
+    <div class="dialog-actions"><button class="secondary" data-close-dialog="sourceDialog" type="button">取消</button><button class="primary" id="submitSource" type="submit">绑定并同步</button></div>
+  </form>
+</dialog>
+<dialog id="importDialog">
+  <div class="dialog-head"><h2>导入 PGN 棋谱</h2><button class="dialog-close" data-close-dialog="importDialog" type="button" aria-label="关闭">×</button></div>
+  <form class="student-form" id="importForm">
+    <div class="field"><label for="importPgnFile">PGN 文件</label><input id="importPgnFile" type="file" accept=".pgn,application/x-chess-pgn,text/plain"></div>
+    <div class="field"><label for="importPgnText">或粘贴 PGN 内容</label><textarea id="importPgnText" maxlength="1000000"></textarea></div>
+    <div class="form-error" id="importError" role="alert"></div>
+    <div class="dialog-actions"><button class="secondary" data-close-dialog="importDialog" type="button">取消</button><button class="primary" id="submitImport" type="submit">导入匹配对局</button></div>
+  </form>
+</dialog>
 <script>
   const state = { students: [], selected: null };
   const el = (id) => document.getElementById(id);
@@ -182,6 +209,7 @@
   const percentageMetrics = new Set(["clean_game_rate", "score_pct", "conversion_win_rate"]);
 
   function showError(message) { el("error").innerHTML = `<div class="error">${esc(message)}</div>`; }
+  function showNotice(message) { el("error").innerHTML = `<div class="notice">${esc(message)}</div>`; }
   function accountText(account) { return account.username || account.external_id; }
   function searchable(student) { return [student.display_name, ...student.aliases, ...student.accounts.map(accountText)].join(" ").toLowerCase(); }
 
@@ -201,9 +229,17 @@
     if (!accounts.length) return '<div class="empty">尚未绑定公开数据源。</div>';
     return `<div class="accounts">${accounts.map((account) => {
       const sync = account.sync;
-      const status = sync?.last_error ? "异常" : sync?.last_success_at ? "正常" : "未同步";
-      const cls = sync?.last_error ? "bad" : sync?.last_success_at ? "" : "warn";
-      return `<div class="account"><strong>${esc(account.source)}</strong><small>${esc(accountText(account))}</small><span class="badge ${cls}">${status}</span></div>`;
+      const automatic = account.source === "chess.com" || account.source === "lichess";
+      const status = sync?.last_error ? "异常" : sync?.last_success_at ? "已同步" : automatic ? "未同步" : "资料链接";
+      const cls = sync?.last_error ? "bad" : sync?.last_success_at || !automatic ? "" : "warn";
+      let label = esc(accountText(account));
+      if (account.profile_url) {
+        try {
+          const url = new URL(account.profile_url);
+          if (url.protocol === "https:" || url.protocol === "http:") label = `<a href="${esc(url.href)}" target="_blank" rel="noopener">${label}</a>`;
+        } catch (_) {}
+      }
+      return `<div class="account"><strong>${esc(account.source)}</strong><small>${label}</small><div class="account-actions"><span class="badge ${cls}">${status}</span>${automatic ? `<button class="mini" type="button" data-sync-account="${esc(account.account_id)}">↻ 同步</button>` : ""}</div></div>`;
     }).join("")}</div>`;
   }
 
@@ -238,8 +274,27 @@
         <div class="identity"><div><h2>${esc(student.display_name)}</h2><p>${student.aliases.map(esc).join(" · ")}</p></div><span class="badge ${progress?.status === "declining" ? "bad" : progress?.status === "insufficient_data" ? "warn" : ""}">${trendLabel[progress?.status] || "待分析"}</span></div>
         <div class="facts"><div class="fact"><b>${student.games}</b><span>收录对局</span></div><div class="fact"><b>${student.analyzed_games}</b><span>已分析</span></div><div class="fact"><b>${pct(student.analysis_coverage)}</b><span>分析覆盖</span></div><div class="fact"><b>${student.last_game_date || "—"}</b><span>最近对局</span></div></div>
         <div class="block" id="progress">${renderTrend(progress)}</div>
-        <div class="block" id="sources"><div class="block-title"><h3>数据来源</h3><span>${student.accounts.length} 个账号</span></div>${renderAccounts(student.accounts)}</div>`;
+        <div class="block" id="sources"><div class="block-title"><div><h3>数据来源</h3><span>${student.accounts.length} 个账号</span></div><div class="block-actions"><button class="mini" id="openImport" type="button">⇧ 导入 PGN</button><button class="mini" id="openSource" type="button">＋ 绑定平台</button></div></div>${renderAccounts(student.accounts)}</div>`;
+      el("openSource").addEventListener("click", () => el("sourceDialog").showModal());
+      el("openImport").addEventListener("click", () => el("importDialog").showModal());
+      document.querySelectorAll("[data-sync-account]").forEach((button) => button.addEventListener("click", () => syncAccount(button)));
     } catch (error) { el("detail").innerHTML = `<div class="error">${esc(error.message)}</div>`; }
+  }
+
+  async function syncAccount(button) {
+    button.disabled = true;
+    button.textContent = "同步中…";
+    try {
+      const response = await fetch(`/api/coach/students/${encodeURIComponent(state.selected)}/accounts/${encodeURIComponent(button.dataset.syncAccount)}/sync`, {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"});
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "平台同步失败");
+      showNotice(`同步完成：发现 ${data.result.games_seen} 盘，新增 ${data.result.games_new} 盘，重复 ${data.result.games_duplicate} 盘。`);
+      await loadDashboard(state.selected);
+    } catch (error) {
+      showError(error.message);
+      button.disabled = false;
+      button.textContent = "↻ 同步";
+    }
   }
 
   async function loadDashboard(preferredPersonId = null) {
@@ -305,6 +360,103 @@
       await loadDashboard(personId);
     } catch (error) {
       el("createStudentError").textContent = error.message;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  function closeDialog(dialogId) {
+    const dialog = el(dialogId);
+    if (dialog.open) dialog.close();
+  }
+  document.querySelectorAll("[data-close-dialog]").forEach((button) => button.addEventListener("click", () => closeDialog(button.dataset.closeDialog)));
+
+  function updateSourceFields() {
+    const chessbase = el("sourceType").value === "chessbase";
+    el("sourceUrlField").hidden = !chessbase;
+    el("sourceUsernameLabel").textContent = chessbase ? "PGN 中的棋手名（可选）" : "平台用户名";
+    el("sourceUsername").placeholder = chessbase ? "例如 Wu,S 或 Wu,Sibo" : "";
+    el("submitSource").textContent = chessbase ? "保存资料链接" : "绑定并同步";
+  }
+  el("sourceType").addEventListener("change", updateSourceFields);
+  el("sourceDialog").addEventListener("close", () => {
+    el("sourceForm").reset();
+    el("sourceError").textContent = "";
+    updateSourceFields();
+  });
+  el("sourceForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = el("submitSource");
+    const source = el("sourceType").value;
+    submit.disabled = true;
+    el("sourceError").textContent = "";
+    try {
+      const response = await fetch(`/api/coach/students/${encodeURIComponent(state.selected)}/accounts`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({source, username: el("sourceUsername").value.trim(), profile_url: el("sourceUrl").value.trim()}),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "无法绑定平台账号");
+      if (source === "chessbase") {
+        closeDialog("sourceDialog");
+        showNotice("ChessBase 资料链接已保存。请通过 PGN 导入棋局。");
+        await loadDashboard(state.selected);
+        return;
+      }
+      const syncResponse = await fetch(`/api/coach/students/${encodeURIComponent(state.selected)}/accounts/${encodeURIComponent(data.account.account_id)}/sync`, {
+        method: "POST", headers: {"Content-Type": "application/json"}, body: "{}",
+      });
+      const syncData = await syncResponse.json();
+      closeDialog("sourceDialog");
+      await loadDashboard(state.selected);
+      if (!syncResponse.ok || !syncData.ok) {
+        showError(`账号已绑定，但${syncData.error || "首次同步失败"}`);
+        return;
+      }
+      showNotice(`账号已绑定：发现 ${syncData.result.games_seen} 盘，新增 ${syncData.result.games_new} 盘。`);
+    } catch (error) {
+      el("sourceError").textContent = error.message;
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  el("importPgnFile").addEventListener("change", async () => {
+    const file = el("importPgnFile").files[0];
+    if (!file) return;
+    try {
+      el("importPgnText").value = await file.text();
+      el("importError").textContent = "";
+    } catch (_) {
+      el("importError").textContent = "无法读取该文件。";
+    }
+  });
+  el("importDialog").addEventListener("close", () => {
+    el("importForm").reset();
+    el("importError").textContent = "";
+  });
+  el("importForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = el("submitImport");
+    const pgn = el("importPgnText").value;
+    if (!pgn.trim()) {
+      el("importError").textContent = "请选择 PGN 文件或粘贴棋谱。";
+      return;
+    }
+    submit.disabled = true;
+    el("importError").textContent = "";
+    try {
+      const response = await fetch(`/api/coach/students/${encodeURIComponent(state.selected)}/games/import`, {
+        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({pgn}),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "无法导入棋谱");
+      closeDialog("importDialog");
+      showNotice(`导入完成：匹配 ${data.result.games_matched} 盘，新增 ${data.result.games_imported} 盘，重复 ${data.result.games_duplicate} 盘，跳过 ${data.result.games_skipped} 盘。`);
+      await loadDashboard(state.selected);
+    } catch (error) {
+      el("importError").textContent = error.message;
     } finally {
       submit.disabled = false;
     }

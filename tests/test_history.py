@@ -18,7 +18,7 @@ from chess_review.history import (
 )
 from chess_review.models import GameAnalysis, MoveAnalysis
 from chess_review.opening_book import OpeningBook
-from chess_review.sources import HttpResponse, sync_external_account
+from chess_review.sources import HttpResponse, SyncResult, sync_external_account
 
 
 def _game(white="Alice", black="Bob", site="game-1"):
@@ -390,6 +390,96 @@ def test_coach_dashboard_can_create_student(tmp_path, monkeypatch):
         "/api/coach/students", json={"display_name": "Remote"},
         environ_overrides=remote,
     ).status_code == 503
+
+
+def test_coach_dashboard_binds_syncs_and_imports_sources(tmp_path, monkeypatch):
+    from chess_review import webapp
+
+    database = tmp_path / "history.sqlite"
+    with PlayerHistoryStore(str(database)) as store:
+        person_id = store.create_person("Sibo Wu", ("Wu, Sibo",))
+
+    monkeypatch.setattr(webapp, "_HISTORY_DB", str(database))
+    monkeypatch.delenv("CHESS_REVIEW_COACH_TOKEN", raising=False)
+    client = webapp.create_app().test_client()
+
+    chessbase = client.post(
+        f"/api/coach/students/{person_id}/accounts",
+        json={
+            "source": "chessbase",
+            "username": "Wu,S",
+            "profile_url": "https://players.chessbase.com/en/player/Wu_Sibo/654682",
+        },
+    )
+    assert chessbase.status_code == 201
+    chessbase_account = chessbase.get_json()["account"]
+    assert chessbase_account["external_id"] == "654682"
+    assert "Wu,S" in chessbase.get_json()["student"]["aliases"]
+    assert client.post(
+        f"/api/coach/students/{person_id}/accounts/"
+        f"{chessbase_account['account_id']}/sync",
+    ).status_code == 422
+    assert client.post(
+        f"/api/coach/students/{person_id}/accounts",
+        json={"source": "chess.com", "username": None},
+    ).status_code == 400
+
+    chesscom = client.post(
+        f"/api/coach/students/{person_id}/accounts",
+        json={"source": "chess.com", "username": "SiboOnline"},
+    )
+    assert chesscom.status_code == 201
+    chesscom_account = chesscom.get_json()["account"]
+
+    def fake_sync(store, account_id, **_kwargs):
+        _, inserted = store.ingest(_game(white="SiboOnline"))
+        return SyncResult(
+            account_id=account_id, source="chess.com",
+            games_seen=1, games_new=int(inserted),
+            games_duplicate=int(not inserted),
+        )
+
+    monkeypatch.setattr(webapp, "sync_external_account", fake_sync)
+    synced = client.post(
+        f"/api/coach/students/{person_id}/accounts/"
+        f"{chesscom_account['account_id']}/sync",
+    )
+    assert synced.status_code == 200
+    assert synced.get_json()["result"]["games_new"] == 1
+
+    pgn = f"{_game(white='Wu, Sibo')}\n\n{_game(white='Unrelated')}"
+    imported = client.post(
+        f"/api/coach/students/{person_id}/games/import",
+        json={"pgn": pgn},
+    )
+    assert imported.status_code == 200
+    result = imported.get_json()["result"]
+    assert result["games_seen"] == 2
+    assert result["games_matched"] == 1
+    assert result["games_skipped"] == 1
+    assert client.post(
+        f"/api/coach/students/{person_id}/games/import",
+        json={"pgn": pgn},
+    ).get_json()["result"]["games_duplicate"] == 1
+
+    detail = client.get(f"/api/coach/students/{person_id}").get_json()
+    assert detail["student"]["games"] == 2
+    assert client.post(
+        f"/api/coach/students/{person_id}/games/import",
+        json={"pgn": str(_game(white="Nobody Here"))},
+    ).status_code == 400
+    malformed = (
+        '[Event "Broken"]\n[Result "*"]\n\n1. e4 *\n\n'
+        f"{_game(white='Wu, Sibo')}"
+    )
+    assert client.post(
+        f"/api/coach/students/{person_id}/games/import",
+        json={"pgn": malformed},
+    ).status_code == 400
+    assert client.post(
+        f"/api/coach/students/{person_id}/games/import",
+        json={"pgn": '[White "Wu, Sibo"]\n[Black "Opponent"]\n\n1. e4 *'},
+    ).status_code == 400
 
 
 def test_game_source_provenance_is_idempotent_and_fails_on_changed_game(tmp_path):
