@@ -111,7 +111,8 @@ def _played_at_ms(game: chess.pgn.Game) -> Optional[int]:
 
 def _sync_lichess(store: PlayerHistoryStore, account: dict, cursor: dict,
                   user_agent: str, token: Optional[str], timeout: int,
-                  http_get: HttpGet) -> tuple[SyncResult, dict]:
+                  http_get: HttpGet,
+                  max_games: Optional[int]) -> tuple[SyncResult, dict]:
     username = account.get("username") or account["external_id"]
     params = {
         "moves": "true", "tags": "true", "clocks": "true",
@@ -119,6 +120,8 @@ def _sync_lichess(store: PlayerHistoryStore, account: dict, cursor: dict,
     }
     if cursor.get("since_ms") is not None:
         params["since"] = str(cursor["since_ms"])
+    if max_games is not None:
+        params["max"] = str(max_games)
     url = (
         "https://lichess.org/api/games/user/"
         f"{urllib.parse.quote(username, safe='')}?{urllib.parse.urlencode(params)}"
@@ -152,7 +155,8 @@ def _sync_lichess(store: PlayerHistoryStore, account: dict, cursor: dict,
 
 def _sync_chesscom(store: PlayerHistoryStore, account: dict, cursor: dict,
                    user_agent: str, timeout: int,
-                   http_get: HttpGet) -> tuple[SyncResult, dict]:
+                   http_get: HttpGet,
+                   max_games: Optional[int]) -> tuple[SyncResult, dict]:
     username = account.get("username") or account["external_id"]
     base = f"https://api.chess.com/pub/player/{urllib.parse.quote(username, safe='')}"
     archives_url = f"{base}/games/archives"
@@ -168,10 +172,12 @@ def _sync_chesscom(store: PlayerHistoryStore, account: dict, cursor: dict,
 
     result = SyncResult(account["account_id"], "chess.com", requests=1)
     etags = dict(cursor.get("archive_etags", {}))
-    candidates = [url for url in archive_list if url not in etags]
+    candidates = [url for url in reversed(archive_list) if url not in etags]
     if archive_list and archive_list[-1] not in candidates:
-        candidates.append(archive_list[-1])
+        candidates.insert(0, archive_list[-1])
     for archive_url in candidates:
+        if max_games is not None and result.games_seen >= max_games:
+            break
         headers = dict(base_headers)
         if etags.get(archive_url):
             headers["If-None-Match"] = etags[archive_url]
@@ -185,12 +191,16 @@ def _sync_chesscom(store: PlayerHistoryStore, account: dict, cursor: dict,
         games = _json(response, archive_url).get("games")
         if not isinstance(games, list):
             raise SourceSyncError(f"Invalid Chess.com games archive: {archive_url}")
-        for source_game in games:
+        complete_archive = True
+        for source_game in reversed(games):
             if not isinstance(source_game, dict):
                 raise SourceSyncError(f"Invalid Chess.com game: {archive_url}")
             if source_game.get("rules") not in (None, "chess"):
                 result.games_skipped += 1
                 continue
+            if max_games is not None and result.games_seen >= max_games:
+                complete_archive = False
+                break
             if not isinstance(source_game.get("pgn"), str):
                 raise SourceSyncError(f"Invalid Chess.com game: {archive_url}")
             parsed = _parse_games(
@@ -213,7 +223,12 @@ def _sync_chesscom(store: PlayerHistoryStore, account: dict, cursor: dict,
             result.games_seen += 1
             result.games_new += int(inserted)
             result.games_duplicate += int(not inserted)
-        etags[archive_url] = response.headers.get("etag", "")
+        if complete_archive:
+            etags[archive_url] = response.headers.get("etag", "")
+        else:
+            # This sync intentionally keeps only the newest part of the archive.
+            # Mark it complete so later runs focus on newly changed recent games.
+            etags[archive_url] = response.headers.get("etag", "")
     return result, {"archive_etags": etags}
 
 
@@ -221,6 +236,7 @@ def sync_external_account(store: PlayerHistoryStore, account_id: str, *,
                           user_agent: str = "chess-review/0.1",
                           lichess_token: Optional[str] = None,
                           timeout: int = 60,
+                          max_games: Optional[int] = None,
                           http_get: Optional[HttpGet] = None) -> SyncResult:
     """Fetch new public games for one registered source account."""
     account = store.external_account(account_id)
@@ -230,10 +246,11 @@ def sync_external_account(store: PlayerHistoryStore, account_id: str, *,
     try:
         if account["source"] == "lichess":
             result, next_cursor = _sync_lichess(
-                store, account, cursor, user_agent, lichess_token, timeout, get)
+                store, account, cursor, user_agent, lichess_token, timeout, get,
+                max_games)
         elif account["source"] in ("chess.com", "chesscom"):
             result, next_cursor = _sync_chesscom(
-                store, account, cursor, user_agent, timeout, get)
+                store, account, cursor, user_agent, timeout, get, max_games)
         else:
             raise SourceSyncError(
                 f"Source does not support automatic sync: {account['source']}")

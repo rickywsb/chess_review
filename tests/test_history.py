@@ -21,9 +21,9 @@ from chess_review.opening_book import OpeningBook
 from chess_review.sources import HttpResponse, SyncResult, sync_external_account
 
 
-def _game(white="Alice", black="Bob", site="game-1"):
+def _game(white="Alice", black="Bob", site="game-1", date="2026.09.13"):
     return chess.pgn.read_game(io.StringIO(
-        f'[Event "Test"]\n[Site "{site}"]\n[Date "2026.09.13"]\n'
+        f'[Event "Test"]\n[Site "{site}"]\n[Date "{date}"]\n'
         f'[White "{white}"]\n[Black "{black}"]\n[Result "1-0"]\n\n'
         "1. e4 e5 2. Nf3 Nc6 1-0"
     ))
@@ -183,6 +183,7 @@ def test_history_parser_defaults():
         "history", "sync", "--account", "account-1",
     ])
     assert sync.timeout == 60
+    assert sync.max_games == 200
 
 
 def test_person_identity_links_aliases_accounts_games_and_sync_state(tmp_path):
@@ -217,6 +218,22 @@ def test_person_identity_links_aliases_accounts_games_and_sync_state(tmp_path):
         assert person["accounts"][0]["metadata"] == {"title": "FM"}
         with pytest.raises(ValueError, match="alias is already assigned"):
             store.create_person("Wu, Sibo")
+
+
+def test_person_games_recent_returns_newest_games_with_a_limit(tmp_path):
+    database = tmp_path / "history.sqlite"
+    with PlayerHistoryStore(str(database)) as store:
+        person_id = store.create_person("Alice")
+        store.ingest(_game(site="old", date="2026.01.01"))
+        store.ingest(_game(site="new", date="2026.03.01"))
+        store.ingest(_game(site="middle", date="2026.02.01"))
+
+        games = list(store.person_games_recent(person_id, 2))
+
+    assert [game.headers["Site"] for _, game in games] == ["new", "middle"]
+    with PlayerHistoryStore(str(database)) as store:
+        with pytest.raises(ValueError, match="positive"):
+            list(store.person_games_recent(person_id, 0))
 
 
 def test_person_report_combines_exact_aliases_without_substring_matches(tmp_path):
@@ -431,7 +448,10 @@ def test_coach_dashboard_binds_syncs_and_imports_sources(tmp_path, monkeypatch):
     assert chesscom.status_code == 201
     chesscom_account = chesscom.get_json()["account"]
 
-    def fake_sync(store, account_id, **_kwargs):
+    sync_options = {}
+
+    def fake_sync(store, account_id, **kwargs):
+        sync_options.update(kwargs)
         _, inserted = store.ingest(_game(white="SiboOnline"))
         return SyncResult(
             account_id=account_id, source="chess.com",
@@ -446,6 +466,7 @@ def test_coach_dashboard_binds_syncs_and_imports_sources(tmp_path, monkeypatch):
     )
     assert synced.status_code == 200
     assert synced.get_json()["result"]["games_new"] == 1
+    assert sync_options["max_games"] == 200
 
     pgn = f"{_game(white='Wu, Sibo')}\n\n{_game(white='Unrelated')}"
     imported = client.post(
@@ -480,6 +501,62 @@ def test_coach_dashboard_binds_syncs_and_imports_sources(tmp_path, monkeypatch):
         f"/api/coach/students/{person_id}/games/import",
         json={"pgn": '[White "Wu, Sibo"]\n[Black "Opponent"]\n\n1. e4 *'},
     ).status_code == 400
+
+
+def test_coach_batch_analysis_resumes_one_recent_game_at_a_time(
+        tmp_path, monkeypatch):
+    from chess_review import webapp
+
+    database = tmp_path / "history.sqlite"
+    with PlayerHistoryStore(str(database)) as store:
+        person_id = store.create_person("Alice")
+        store.ingest(_game(site="old", date="2026.01.01"))
+        store.ingest(_game(site="new", date="2026.02.01"))
+
+    engine_path = tmp_path / "stockfish"
+    engine_path.write_bytes(b"fake-engine")
+
+    class FakeEngine:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def metadata(self):
+            return {
+                "name": "Stockfish Test", "author": "Test",
+                "path": str(engine_path), "depth": 18,
+                "movetime_ms": None, "threads": 1, "hash_mb": 16,
+            }
+
+    analyzed_sites = []
+    monkeypatch.setattr(webapp, "_HISTORY_DB", str(database))
+    monkeypatch.setattr(webapp, "Engine", FakeEngine)
+    monkeypatch.setattr(
+        webapp, "analyze_game",
+        lambda game, *_args, **_kwargs: (
+            analyzed_sites.append(game.headers["Site"])
+            or _analysis(date=game.headers["Date"], site=game.headers["Site"]))
+    )
+    monkeypatch.delenv("CHESS_REVIEW_COACH_TOKEN", raising=False)
+    client = webapp.create_app().test_client()
+    path = f"/api/coach/students/{person_id}/analysis/batch"
+
+    first = client.post(path, json={"limit": 20})
+    second = client.post(path, json={"limit": 20})
+    third = client.post(path, json={"limit": 20})
+
+    assert first.get_json()["result"]["completed"] == 1
+    assert not first.get_json()["result"]["done"]
+    assert second.get_json()["result"]["completed"] == 2
+    assert second.get_json()["result"]["done"]
+    assert third.get_json()["result"]["analyzed"] == 0
+    assert analyzed_sites == ["new", "old"]
+    assert client.post(path, json={"limit": 21}).status_code == 400
 
 
 def test_game_source_provenance_is_idempotent_and_fails_on_changed_game(tmp_path):
@@ -533,13 +610,47 @@ def test_lichess_sync_ingests_games_and_advances_cursor(tmp_path):
         person_id = store.create_person("Alice")
         account_id = store.add_external_account(
             person_id, "lichess", "aliceonline", username="AliceOnline")
-        first = sync_external_account(store, account_id, http_get=fake_get)
-        second = sync_external_account(store, account_id, http_get=fake_get)
+        first = sync_external_account(
+            store, account_id, max_games=200, http_get=fake_get)
+        second = sync_external_account(
+            store, account_id, max_games=200, http_get=fake_get)
         assert first.games_new == 1
         assert second.games_duplicate == 1
         assert len(list(store.person_games(person_id))) == 1
         assert store.sync_state(account_id)["cursor"]["since_ms"] > 0
+    assert "max=200" in requests[0][0]
     assert "since=" in requests[1][0]
+
+
+def test_chesscom_bounded_sync_starts_with_newest_archive(tmp_path):
+    database = tmp_path / "history.sqlite"
+    old_archive = "https://api.chess.com/pub/player/alice/games/2026/08"
+    new_archive = "https://api.chess.com/pub/player/alice/games/2026/09"
+    requested_archives = []
+
+    def fake_get(url, _headers, _timeout):
+        if url.endswith("/games/archives"):
+            return HttpResponse(
+                200, json_bytes({"archives": [old_archive, new_archive]}), {})
+        requested_archives.append(url)
+        site = "new" if url == new_archive else "old"
+        return HttpResponse(200, json_bytes({"games": [{
+            "url": f"https://www.chess.com/game/live/{site}",
+            "pgn": str(_game(white="AliceOnline", site=site)),
+            "rules": "chess",
+        }]}), {"etag": f'"{site}"'})
+
+    with PlayerHistoryStore(str(database)) as store:
+        person_id = store.create_person("Alice")
+        account_id = store.add_external_account(
+            person_id, "chess.com", "42", username="AliceOnline")
+        result = sync_external_account(
+            store, account_id, max_games=1, http_get=fake_get)
+        games = list(store.person_games(person_id))
+
+    assert result.games_seen == 1
+    assert requested_archives == [new_archive]
+    assert games[0][1].headers["Site"] == "new"
 
 
 def test_chesscom_sync_uses_archive_etag_and_skips_unchanged_month(tmp_path):

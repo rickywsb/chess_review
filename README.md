@@ -75,8 +75,8 @@ for scripted imports.
 Open a student's **数据来源** section to add games:
 
 - **Chess.com / Lichess**: choose **绑定平台**, enter the exact username, and
-  the first official API sync starts immediately. Later syncs fetch only new or
-  changed archives.
+  the first official API sync starts immediately. Each sync inspects at most the
+  latest 200 standard games; later syncs fetch only new or changed archives.
 - **ChessBase Players**: save the player URL as a reference, then export games
   to PGN and use **导入 PGN**. Add the exact name used in its PGN files (for
   example `Wu,S`) while binding the link. ChessBase Players does not publish a
@@ -85,6 +85,12 @@ Open a student's **数据来源** section to add games:
   The importer keeps only games whose White or Black header exactly matches one
   of the student's registered aliases, skips unrelated games, and deduplicates
   repeated imports.
+
+Use **引擎分析** on a student's profile to analyze the latest 20, 40, or 100
+games. The dashboard submits one game per request and saves each result
+immediately. Stopping, refreshing, or restarting the server does not discard
+completed work; starting the same window again skips its cached games and
+continues. Trend metrics become available after 20 dated games are analyzed.
 
 ```bash
 export CHESS_REVIEW_HISTORY_DB=data/player-history.sqlite
@@ -133,6 +139,7 @@ chess-review history account add --person person_<id> \
 # Keep the returned account_id, then fetch only new or changed archives.
 export CHESS_REVIEW_USER_AGENT="chess-review/0.1 (coach@example.com)"
 chess-review history sync --account <account_id> \
+  --max-games 200 \
   --db data/player-history.sqlite
 
 # Import is cheap and idempotent: repeated PGNs are deduplicated.
@@ -143,6 +150,7 @@ chess-review history ingest games/2026-*.pgn \
 # person-id includes every registered PGN alias for the student.
 chess-review history analyze --person-id person_<id> \
   --db data/player-history.sqlite \
+  --limit 20 \
   --depth 18 --threads 1 \
   --master-db data/master-openings.sqlite
 
@@ -171,7 +179,8 @@ are available: 10 vs 10 initially, growing to 20 vs 20. The report labels the
 overall direction and each metric as improving, stable, declining, mixed, or
 insufficient, with sample size and confidence. Undated games remain in lifetime
 totals but are excluded from trend windows. Legacy `--player` commands remain
-available for archives that have not yet created canonical people.
+available for archives that have not yet created canonical people. For history
+analysis, `--limit` selects the newest games first.
 
 ## Versioned training dataset
 
@@ -239,7 +248,8 @@ small samples.
 | `--master-db PATH` | Optional local SQLite master opening database. |
 | `--format md,html` | Which report formats to write. |
 | `--threshold CP` | (review) minimum centipawn loss to list as a critical moment. |
-| `--limit N` | (report) analyze only the first N games for a quick pass. |
+| `--limit N` | Limit the selected command; history analysis uses the newest N games. |
+| `--max-games N` | (history sync) inspect at most the newest N standard games (default 200). |
 
 ## How it works
 

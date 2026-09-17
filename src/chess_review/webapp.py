@@ -20,6 +20,7 @@ import threading
 import time
 import urllib.parse
 from collections import defaultdict, deque
+from contextlib import ExitStack
 from typing import Optional
 
 import chess.pgn
@@ -28,7 +29,11 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from .analysis import analyze_game
 from .classify import MISTAKE
 from .engine import Engine
-from .history import DEFAULT_HISTORY_DB, PlayerHistoryStore
+from .history import (
+    DEFAULT_HISTORY_DB,
+    PlayerHistoryStore,
+    analysis_profile,
+)
 from .metrics import build_player_report
 from .master_db import MasterOpeningDatabase
 from .opening_book import OpeningBook
@@ -57,6 +62,10 @@ def _env_int(name: str, default: int) -> int:
 # via CHESS_REVIEW_DEPTH / CHESS_REVIEW_MAX_DEPTH without touching the UI.
 _DEFAULT_DEPTH = _env_int("CHESS_REVIEW_DEPTH", 18)
 _MAX_DEPTH = max(_DEFAULT_DEPTH, _env_int("CHESS_REVIEW_MAX_DEPTH", 26))
+_SYNC_MAX_GAMES = max(1, _env_int("CHESS_REVIEW_SYNC_MAX_GAMES", 200))
+_ANALYSIS_BATCH_GAMES = max(
+    1, min(5, _env_int("CHESS_REVIEW_ANALYSIS_BATCH_GAMES", 1)))
+_ANALYSIS_WINDOW_OPTIONS = {20, 40, 100}
 
 # Load the opening book once per process (shared, read-only).
 _BOOK: Optional[OpeningBook] = None
@@ -184,6 +193,8 @@ def create_app() -> Flask:
         _env_int("CHESS_REVIEW_COACH_WRITE_MAX", 30), 60)
     coach_sync_limiter = _RateLimiter(
         _env_int("CHESS_REVIEW_COACH_SYNC_MAX", 6), 60)
+    coach_analysis_limiter = _RateLimiter(
+        _env_int("CHESS_REVIEW_COACH_ANALYSIS_MAX", 30), 60)
 
     def coach_rate_response(limiter: _RateLimiter) -> Optional[Response]:
         allowed, retry = limiter.allow(_client_key())
@@ -355,6 +366,7 @@ def create_app() -> Flask:
                         "CHESS_REVIEW_USER_AGENT", "chess-review/0.1"),
                     lichess_token=os.environ.get("LICHESS_TOKEN"),
                     timeout=60,
+                    max_games=_SYNC_MAX_GAMES,
                 )
         except ValueError:
             return jsonify(ok=False, error="未找到该平台账号。"), 404
@@ -362,6 +374,69 @@ def create_app() -> Flask:
             app.logger.exception("Coach account sync failed")
             return jsonify(ok=False, error="平台同步失败，请稍后重试。"), 502
         return jsonify(ok=True, result=result.as_dict())
+
+    @app.post("/api/coach/students/<person_id>/analysis/batch")
+    def analyze_coach_student_batch(person_id: str):
+        if not _coach_authorized():
+            return _coach_unauthorized()
+        limited = coach_rate_response(coach_analysis_limiter)
+        if limited is not None:
+            return limited
+        if not request.is_json:
+            return jsonify(ok=False, error="请使用 JSON 提交分析范围。"), 415
+        payload = request.get_json(silent=True)
+        limit = payload.get("limit") if isinstance(payload, dict) else None
+        if limit not in _ANALYSIS_WINDOW_OPTIONS:
+            return jsonify(ok=False, error="分析范围只能选择最近 20、40 或 100 盘。"), 400
+
+        try:
+            with ExitStack() as stack:
+                store = stack.enter_context(PlayerHistoryStore(_HISTORY_DB))
+                identity = store.person_identity(person_id)
+                stored_games = list(store.person_games_recent(person_id, limit))
+                if not stored_games:
+                    return jsonify(ok=False, error="该学员还没有可分析的棋局。"), 422
+
+                engine = stack.enter_context(Engine(depth=_DEFAULT_DEPTH))
+                master_path = os.environ.get("CHESS_REVIEW_MASTER_DB")
+                master_db = (stack.enter_context(MasterOpeningDatabase(master_path))
+                             if master_path else None)
+                profile = analysis_profile(
+                    engine.metadata(), _book(),
+                    master_db.identity() if master_db is not None else None,
+                )
+                profile_id = store.register_profile(profile)
+                pending = [
+                    (game_id, game) for game_id, game in stored_games
+                    if not store.has_analysis(game_id, profile_id)
+                ]
+                analyzed = 0
+                for game_id, game in pending[:_ANALYSIS_BATCH_GAMES]:
+                    result = analyze_game(
+                        game, engine, book=_book(), master_db=master_db)
+                    store.save_analysis(game_id, profile_id, result)
+                    analyzed += 1
+                completed = len(stored_games) - len(pending) + analyzed
+        except ValueError:
+            return jsonify(ok=False, error="未找到该学员档案。"), 404
+        except FileNotFoundError:
+            app.logger.exception("Stockfish engine is unavailable")
+            return jsonify(ok=False, error="未找到 Stockfish 引擎。"), 500
+        except Exception:  # noqa: BLE001 - isolate engine/database failures
+            app.logger.exception("Coach batch analysis failed")
+            return jsonify(ok=False, error="批量分析失败，请稍后重试。"), 500
+
+        return jsonify(ok=True, result={
+            "student": identity["display_name"],
+            "profile_id": profile_id,
+            "requested": limit,
+            "total": len(stored_games),
+            "completed": completed,
+            "analyzed": analyzed,
+            "cached": completed - analyzed,
+            "remaining": len(stored_games) - completed,
+            "done": completed == len(stored_games),
+        })
 
     @app.post("/api/coach/students/<person_id>/games/import")
     def import_coach_games(person_id: str):

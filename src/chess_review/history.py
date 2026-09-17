@@ -486,6 +486,24 @@ class PlayerHistoryStore:
                 raise HistoryDataError(f"Invalid stored PGN for game {game_id}")
             yield game_id, game
 
+    def person_games_recent(
+            self, person_id: str, limit: int) -> Iterator[tuple[str, chess.pgn.Game]]:
+        """Return a person's newest stored games first, bounded by ``limit``."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        rows = self._connection.execute("""
+            SELECT g.game_id, g.pgn FROM games g
+            JOIN game_participants gp ON gp.game_id=g.game_id
+            WHERE gp.person_id=?
+            ORDER BY NULLIF(g.played_date, '') DESC, g.game_id DESC
+            LIMIT ?
+        """, (person_id, limit))
+        for game_id, pgn in rows:
+            game = chess.pgn.read_game(io.StringIO(pgn))
+            if game is None or game.errors:
+                raise HistoryDataError(f"Invalid stored PGN for game {game_id}")
+            yield game_id, game
+
     def ingest(self, game: chess.pgn.Game, *, source: Optional[str] = None,
                source_game_id: Optional[str] = None,
                source_url: Optional[str] = None,
@@ -569,6 +587,24 @@ class PlayerHistoryStore:
             WHERE white_key=? OR black_key=?
             ORDER BY played_date, game_id
         """, (player_key, player_key))
+        for game_id, pgn in rows:
+            game = chess.pgn.read_game(io.StringIO(pgn))
+            if game is None or game.errors:
+                raise HistoryDataError(f"Invalid stored PGN for game {game_id}")
+            yield game_id, game
+
+    def player_games_recent(
+            self, player: str, limit: int) -> Iterator[tuple[str, chess.pgn.Game]]:
+        """Return the newest games matching a legacy player name."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        player_key = _normalize_player(player)
+        rows = self._connection.execute("""
+            SELECT game_id, pgn FROM games
+            WHERE white_key=? OR black_key=?
+            ORDER BY NULLIF(played_date, '') DESC, game_id DESC
+            LIMIT ?
+        """, (player_key, player_key, limit))
         for game_id, pgn in rows:
             game = chess.pgn.read_game(io.StringIO(pgn))
             if game is None or game.errors:

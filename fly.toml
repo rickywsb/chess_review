@@ -25,6 +25,8 @@ primary_region = 'sjc'
   CHESS_REVIEW_RATE_WINDOW = "60"
   CHESS_REVIEW_MAX_GAMES = "30"
   CHESS_REVIEW_MAX_PGN_BYTES = "1000000"
+  CHESS_REVIEW_SYNC_MAX_GAMES = "200"
+  CHESS_REVIEW_ANALYSIS_BATCH_GAMES = "1"
   CHESS_REVIEW_MASTER_DB = "/data/master-openings.sqlite"
   CHESS_REVIEW_HISTORY_DB = "/data/player-history.sqlite"
 [http_service]

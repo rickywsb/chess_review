@@ -209,12 +209,14 @@ def cmd_history_analyze(args: argparse.Namespace) -> int:
         if person_id:
             identity = store.person_identity(person_id)
             target = identity["display_name"]
-            stored_games = list(store.person_games(person_id))
+            stored_games = list(
+                store.person_games_recent(person_id, args.limit)
+                if args.limit else store.person_games(person_id))
         else:
             target = player
-            stored_games = list(store.player_games(player))
-        if args.limit:
-            stored_games = stored_games[:args.limit]
+            stored_games = list(
+                store.player_games_recent(player, args.limit)
+                if args.limit else store.player_games(player))
         if not stored_games:
             print(f"No stored games found for '{target}'.", file=sys.stderr)
             return 1
@@ -331,6 +333,7 @@ def cmd_history_sync(args: argparse.Namespace) -> int:
             store, args.account, user_agent=user_agent,
             lichess_token=os.environ.get("LICHESS_TOKEN"),
             timeout=args.timeout,
+            max_games=args.max_games,
         )
     print(json.dumps(result.as_dict(), ensure_ascii=False,
                      sort_keys=True, indent=2))
@@ -622,6 +625,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--user-agent",
         help="Recognizable API User-Agent; defaults to CHESS_REVIEW_USER_AGENT.")
     sp_history_sync.add_argument("--timeout", type=_positive_int, default=60)
+    sp_history_sync.add_argument(
+        "--max-games", type=_positive_int, default=200,
+        help="Maximum recent standard games to inspect (default 200).")
     sp_history_sync.set_defaults(func=cmd_history_sync)
 
     sp_data = sub.add_parser(
