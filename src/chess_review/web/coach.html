@@ -251,7 +251,7 @@
 
   function renderTrend(progress) {
     if (!progress || progress.status === "insufficient_data") {
-      return `<div class="empty">当前有 ${progress?.available_games || 0} 盘可用于趋势分析，至少需要 ${progress?.required_games || 20} 盘有日期的对局。</div>`;
+      return `<div class="empty">当前有 ${progress?.available_games || 0} 盘已完成引擎分析且带日期的对局，至少需要 ${progress?.required_games || 20} 盘才能生成趋势。</div>`;
     }
     const rows = Object.entries(metricLabels).map(([key, label]) => {
       const metric = progress.metrics[key];
@@ -288,7 +288,7 @@
       const response = await fetch(`/api/coach/students/${encodeURIComponent(state.selected)}/accounts/${encodeURIComponent(button.dataset.syncAccount)}/sync`, {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"});
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || "平台同步失败");
-      showNotice(`同步完成：发现 ${data.result.games_seen} 盘，新增 ${data.result.games_new} 盘，重复 ${data.result.games_duplicate} 盘。`);
+      showNotice(`同步完成：发现 ${data.result.games_seen} 盘，新增 ${data.result.games_new} 盘，重复 ${data.result.games_duplicate} 盘，跳过 ${data.result.games_skipped || 0} 盘非标准棋局。`);
       await loadDashboard(state.selected);
     } catch (error) {
       showError(error.message);
@@ -414,7 +414,7 @@
         showError(`账号已绑定，但${syncData.error || "首次同步失败"}`);
         return;
       }
-      showNotice(`账号已绑定：发现 ${syncData.result.games_seen} 盘，新增 ${syncData.result.games_new} 盘。`);
+      showNotice(`账号已绑定：发现 ${syncData.result.games_seen} 盘，新增 ${syncData.result.games_new} 盘，跳过 ${syncData.result.games_skipped || 0} 盘非标准棋局。`);
     } catch (error) {
       el("sourceError").textContent = error.message;
     } finally {

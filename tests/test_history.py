@@ -554,6 +554,11 @@ def test_chesscom_sync_uses_archive_etag_and_skips_unchanged_month(tmp_path):
         "time_class": "rapid",
         "time_control": "600+5",
     }
+    unsupported_game = {
+        "url": "https://www.chess.com/game/live/variant",
+        "pgn": None,
+        "rules": "bughouse",
+    }
     month_requests = []
 
     def fake_get(url, headers, _timeout):
@@ -564,7 +569,7 @@ def test_chesscom_sync_uses_archive_etag_and_skips_unchanged_month(tmp_path):
         if headers.get("If-None-Match") == '"month-v1"':
             return HttpResponse(304, b"", {"etag": '"month-v1"'})
         return HttpResponse(
-            200, json_bytes({"games": [source_game]}),
+            200, json_bytes({"games": [source_game, unsupported_game]}),
             {"etag": '"month-v1"'},
         )
 
@@ -575,6 +580,7 @@ def test_chesscom_sync_uses_archive_etag_and_skips_unchanged_month(tmp_path):
         first = sync_external_account(store, account_id, http_get=fake_get)
         second = sync_external_account(store, account_id, http_get=fake_get)
         assert first.games_new == 1
+        assert first.games_skipped == 1
         assert second.games_seen == 0
         assert len(list(store.person_games(person_id))) == 1
     assert month_requests[1]["If-None-Match"] == '"month-v1"'

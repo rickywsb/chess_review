@@ -35,6 +35,7 @@ class SyncResult:
     games_seen: int = 0
     games_new: int = 0
     games_duplicate: int = 0
+    games_skipped: int = 0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -185,8 +186,12 @@ def _sync_chesscom(store: PlayerHistoryStore, account: dict, cursor: dict,
         if not isinstance(games, list):
             raise SourceSyncError(f"Invalid Chess.com games archive: {archive_url}")
         for source_game in games:
-            if not isinstance(source_game, dict) or not isinstance(
-                    source_game.get("pgn"), str):
+            if not isinstance(source_game, dict):
+                raise SourceSyncError(f"Invalid Chess.com game: {archive_url}")
+            if source_game.get("rules") not in (None, "chess"):
+                result.games_skipped += 1
+                continue
+            if not isinstance(source_game.get("pgn"), str):
                 raise SourceSyncError(f"Invalid Chess.com game: {archive_url}")
             parsed = _parse_games(
                 source_game["pgn"].encode("utf-8"), archive_url)
