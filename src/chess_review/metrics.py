@@ -27,6 +27,12 @@ MOVE_BUCKETS = [
     ("61+", 61, 10_000),
 ]
 
+PHASE_ZH = {
+    "opening": "开局",
+    "middlegame": "中局",
+    "endgame": "残局",
+}
+
 
 def _pov(eval_white: int, color: bool) -> int:
     return eval_white if color == chess.WHITE else -eval_white
@@ -244,6 +250,129 @@ def _progress(contexts: list[GameContext]) -> dict:
     }
 
 
+def _coach_diagnosis(contexts: list[GameContext], report: dict) -> dict:
+    """Build cautious, evidence-backed strengths and training priorities."""
+    if len(contexts) < 10:
+        return {
+            "status": "insufficient_data",
+            "required_games": 10,
+            "available_games": len(contexts),
+            "strengths": [],
+            "weaknesses": [],
+            "priorities": [],
+        }
+
+    strengths = []
+    weaknesses = []
+    priorities = []
+    eligible_phases = [row for row in report["phases"] if row["moves"] >= 30]
+    if len(eligible_phases) >= 2:
+        ordered = sorted(eligible_phases, key=lambda row: row["avg_loss"])
+        strongest = ordered[0]
+        weakest = ordered[-1]
+        if ordered[1]["avg_loss"] - strongest["avg_loss"] >= 5:
+            strengths.append({
+                "key": f"phase_{strongest['phase']}",
+                "title": f"{PHASE_ZH[strongest['phase']]}相对稳定",
+                "evidence": (
+                    f"平均每步损失 {strongest['avg_loss']}cp，"
+                    f"严重失误率 {strongest['blunder_rate'] * 100:.1f}%，"
+                    f"样本 {strongest['moves']} 步。"
+                ),
+                "confidence": "high" if strongest["moves"] >= 100 else "medium",
+            })
+        if weakest["avg_loss"] - ordered[-2]["avg_loss"] >= 5:
+            phase_zh = PHASE_ZH[weakest["phase"]]
+            weaknesses.append({
+                "key": f"phase_{weakest['phase']}",
+                "title": f"{phase_zh}损失最集中",
+                "evidence": (
+                    f"平均每步损失 {weakest['avg_loss']}cp，"
+                    f"错着率 {weakest['mistake_rate'] * 100:.1f}%，"
+                    f"样本 {weakest['moves']} 步。"
+                ),
+                "confidence": "high" if weakest["moves"] >= 100 else "medium",
+            })
+            priorities.append({
+                "key": f"phase_{weakest['phase']}",
+                "title": f"优先改善{phase_zh}决策",
+                "action": "复盘该阶段损失最大的局面，按候选着、对手威胁、计算验证三步记录思路。",
+            })
+
+    conversion = report["conversion"]
+    if conversion["n"] >= 5:
+        item = {
+            "key": "conversion",
+            "title": "优势转化可靠" if conversion["win_rate"] >= 0.75 else "优势转化不足",
+            "evidence": (
+                f"取得至少 +2 优势的 {conversion['n']} 盘中，"
+                f"赢下 {conversion['wins']} 盘，胜率 {conversion['win_rate'] * 100:.0f}%。"
+            ),
+            "confidence": "high" if conversion["n"] >= 10 else "medium",
+        }
+        if conversion["win_rate"] >= 0.75:
+            strengths.append(item)
+        elif conversion["win_rate"] < 0.5:
+            weaknesses.append(item)
+            priorities.append({
+                "key": "conversion",
+                "title": "训练优势局面的收束",
+                "action": "针对 +2 以上未获胜对局，检查强制着、兑子选择和对手反击资源。",
+            })
+
+    resilience = report["resilience"]
+    if resilience["n"] >= 5:
+        item = {
+            "key": "resilience",
+            "title": "逆风韧性较强" if resilience["save_rate"] >= 0.35 else "逆风救回率偏低",
+            "evidence": (
+                f"曾落后至少 -2 的 {resilience['n']} 盘中，"
+                f"救回 {resilience['saved']} 盘，挽救率 {resilience['save_rate'] * 100:.0f}%。"
+            ),
+            "confidence": "high" if resilience["n"] >= 10 else "medium",
+        }
+        if resilience["save_rate"] >= 0.35:
+            strengths.append(item)
+        elif resilience["save_rate"] < 0.15:
+            weaknesses.append(item)
+            priorities.append({
+                "key": "resilience",
+                "title": "增加困难局面的防守训练",
+                "action": "从劣势局面练习寻找交换、堡垒、永将和制造实际难题的机会。",
+            })
+
+    moves = [move for context in contexts for move in context.moves]
+    forcing_misses = [
+        move for move in moves
+        if move.cp_loss >= MISTAKE and move.is_forcing_miss
+    ]
+    forcing_rate = 100 * _rate(len(forcing_misses), len(moves))
+    if len(forcing_misses) >= 3 and forcing_rate >= 1.0:
+        weaknesses.append({
+            "key": "forcing_moves",
+            "title": "强制着扫描需要加强",
+            "evidence": (
+                f"共漏掉 {len(forcing_misses)} 次关键将军或吃子，"
+                f"每百步 {forcing_rate:.1f} 次。"
+            ),
+            "confidence": "high" if len(forcing_misses) >= 6 else "medium",
+        })
+        priorities.append({
+            "key": "forcing_moves",
+            "title": "建立每步强制着检查习惯",
+            "action": "落子前固定扫描双方的将军、吃子和直接威胁，再进入候选着计算。",
+        })
+
+    return {
+        "status": "ready",
+        "required_games": 10,
+        "available_games": len(contexts),
+        "strengths": strengths[:3],
+        "weaknesses": weaknesses[:3],
+        "priorities": priorities[:3],
+    }
+
+
 def build_player_report(analyses: list[GameAnalysis], player: str,
                         aliases: Optional[list[str]] = None) -> dict:
     player_names = {_name_key(name) for name in (aliases or [player]) if name.strip()}
@@ -360,5 +489,7 @@ def build_player_report(analyses: list[GameAnalysis], player: str,
         }
         for m, c in ranked[:20]
     ]
+
+    report["diagnosis"] = _coach_diagnosis(contexts, report)
 
     return report

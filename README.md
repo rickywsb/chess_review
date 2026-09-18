@@ -91,6 +91,12 @@ games. The dashboard submits one game per request and saves each result
 immediately. Stopping, refreshing, or restarting the server does not discard
 completed work; starting the same window again skips its cached games and
 continues. Trend metrics become available after 20 dated games are analyzed.
+The student detail view also exposes the full cached report: evidence-backed
+strengths and weaknesses, training priorities, phase accuracy, middlegame risk
+windows, winning-position conversion, resilience, endgame outcomes, and links
+to representative blunders. A diagnosis is withheld below 10 analyzed games;
+phase conclusions require at least 30 moves and scenario conclusions require at
+least 5 qualifying games.
 
 ```bash
 export CHESS_REVIEW_HISTORY_DB=data/player-history.sqlite

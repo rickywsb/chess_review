@@ -3,7 +3,7 @@ import base64
 import io
 import sqlite3
 from argparse import Namespace
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import chess
 import chess.pgn
@@ -292,6 +292,46 @@ def test_progress_refuses_to_infer_from_small_sample():
     report = build_player_report([_analysis() for _ in range(19)], "Alice")
     assert report["progress"]["status"] == "insufficient_data"
     assert report["progress"]["required_games"] == 20
+
+
+def test_coach_diagnosis_names_only_sample_backed_phase_strengths():
+    from chess_review.metrics import build_player_report
+
+    analyses = []
+    for index in range(10):
+        analysis = _analysis(
+            date=f"2026.09.{index + 1:02d}", site=f"game-{index}")
+        move = analysis.moves[0]
+        analysis.moves = [
+            replace(move, ply=1, phase="opening", cp_loss=5),
+            replace(move, ply=2, phase="opening", cp_loss=5),
+            replace(move, ply=3, phase="opening", cp_loss=5),
+            replace(move, ply=4, phase="middlegame", cp_loss=150),
+            replace(move, ply=5, phase="middlegame", cp_loss=150),
+            replace(move, ply=6, phase="middlegame", cp_loss=150),
+            replace(move, ply=7, phase="endgame", cp_loss=20),
+            replace(move, ply=8, phase="endgame", cp_loss=20),
+            replace(move, ply=9, phase="endgame", cp_loss=20),
+        ]
+        analyses.append(analysis)
+
+    diagnosis = build_player_report(analyses, "Alice")["diagnosis"]
+
+    assert diagnosis["status"] == "ready"
+    assert diagnosis["strengths"][0]["title"] == "开局相对稳定"
+    assert diagnosis["weaknesses"][0]["title"] == "中局损失最集中"
+    assert diagnosis["priorities"][0]["title"] == "优先改善中局决策"
+
+
+def test_coach_diagnosis_requires_ten_games():
+    from chess_review.metrics import build_player_report
+
+    diagnosis = build_player_report(
+        [_analysis(site=f"game-{index}") for index in range(9)], "Alice",
+    )["diagnosis"]
+
+    assert diagnosis["status"] == "insufficient_data"
+    assert diagnosis["required_games"] == 10
 
 
 def test_progress_orders_by_date_and_excludes_undated_games():
